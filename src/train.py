@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
 from sklearn.metrics import classification_report, confusion_matrix
 
 
@@ -92,13 +93,7 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     x_test = test_df[feature_cols]
     y_test = test_df["target"]
 
-    model = RandomForestClassifier(
-        n_estimators=350,
-        min_samples_leaf=6,
-        max_depth=8,
-        random_state=42,
-        class_weight="balanced_subsample",
-    )
+    model = build_model()
     model.fit(x_train, y_train)
     preds = model.predict(x_test)
 
@@ -153,11 +148,98 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     print(f"- {artifacts_dir / 'run_report.md'}")
 
 
+def build_model() -> RandomForestClassifier:
+    return RandomForestClassifier(
+        n_estimators=350,
+        min_samples_leaf=6,
+        max_depth=8,
+        random_state=42,
+        class_weight="balanced_subsample",
+    )
+
+
+def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int) -> None:
+    feature_cols = [
+        "log_ret_1",
+        "ret_5",
+        "ret_10",
+        "vol_10",
+        "vol_20",
+        "ma_spread",
+        "rsi_14",
+    ]
+    minimum_train_size = max(160, len(df) // 3)
+    rows = []
+
+    for window_index in range(windows):
+        train_end = minimum_train_size + window_index * test_size
+        test_end = train_end + test_size
+        if test_end > len(df):
+            break
+
+        train_df = df.iloc[:train_end]
+        test_df = df.iloc[train_end:test_end]
+        if len(test_df) < max(12, test_size // 2):
+            break
+
+        model = build_model()
+        model.fit(train_df[feature_cols], train_df["target"])
+        preds = model.predict(test_df[feature_cols])
+
+        rows.append(
+            {
+                "window": window_index + 1,
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "start_date": test_df["date"].iloc[0].date().isoformat(),
+                "end_date": test_df["date"].iloc[-1].date().isoformat(),
+                "accuracy": round(accuracy_score(test_df["target"], preds), 4),
+                "bull_share": round(float((preds == 2).mean()), 4),
+                "bear_share": round(float((preds == 0).mean()), 4),
+            }
+        )
+
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        (artifacts_dir / "walk_forward_report.md").write_text(
+            "# Walk-Forward Evaluation\n\nNo valid windows were generated for the current dataset.\n",
+            encoding="utf-8",
+        )
+        print("Walk-forward evaluation skipped: not enough rows for the requested window settings.")
+        return
+
+    walk_forward_df = pd.DataFrame(rows)
+    walk_forward_df.to_csv(artifacts_dir / "walk_forward_metrics.csv", index=False)
+
+    report_lines = [
+        "# Walk-Forward Evaluation",
+        "",
+        f"- Windows completed: {len(walk_forward_df)}",
+        f"- Mean accuracy: {walk_forward_df['accuracy'].mean():.4f}",
+        f"- Best window accuracy: {walk_forward_df['accuracy'].max():.4f}",
+        f"- Worst window accuracy: {walk_forward_df['accuracy'].min():.4f}",
+        "",
+        "## Window metrics",
+        "```",
+        walk_forward_df.to_string(index=False),
+        "```",
+    ]
+    (artifacts_dir / "walk_forward_report.md").write_text("\n".join(report_lines), encoding="utf-8")
+
+    print("\nWalk-forward evaluation complete:")
+    print(f"- {artifacts_dir / 'walk_forward_metrics.csv'}")
+    print(f"- {artifacts_dir / 'walk_forward_report.md'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a market regime classifier.")
     parser.add_argument("--csv", type=Path, help="Path to CSV with date and close columns.")
     parser.add_argument("--use-synthetic", action="store_true", help="Use synthetic regime data.")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts"), help="Output artifacts directory.")
+    parser.add_argument("--walk-forward", action="store_true", help="Run expanding-window walk-forward evaluation.")
+    parser.add_argument("--walk-forward-windows", type=int, default=4, help="Number of walk-forward windows to evaluate.")
+    parser.add_argument("--walk-forward-test-size", type=int, default=120, help="Rows per walk-forward test window.")
     args = parser.parse_args()
 
     if not args.use_synthetic and args.csv is None:
@@ -170,6 +252,13 @@ def main() -> None:
 
     processed = build_features(raw)
     run_training(processed, args.artifacts)
+    if args.walk_forward:
+        run_walk_forward(
+            processed,
+            args.artifacts,
+            windows=max(1, args.walk_forward_windows),
+            test_size=max(20, args.walk_forward_test_size),
+        )
 
 
 if __name__ == "__main__":

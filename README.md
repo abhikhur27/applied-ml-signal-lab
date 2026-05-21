@@ -19,6 +19,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
 - confusion matrix (CSV)
 - feature importance table
 - markdown run report
+- optional walk-forward metrics + markdown summary
 - serialized model (`joblib`)
 
 ## Why this is useful
@@ -35,7 +36,7 @@ This repo is meant to be a practical base for:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python -m src.train --use-synthetic
+python -m src.train --use-synthetic --walk-forward
 ```
 
 Artifacts are written to `artifacts/`.
@@ -57,6 +58,5 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- add walk-forward evaluation windows
 - add probability calibration and threshold tuning
 - compare tree models against temporal neural baselines
