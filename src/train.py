@@ -10,6 +10,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import classification_report, confusion_matrix
 
+FEATURE_COLS = [
+    "log_ret_1",
+    "ret_5",
+    "ret_10",
+    "vol_10",
+    "vol_20",
+    "ma_spread",
+    "rsi_14",
+]
+
 
 def generate_synthetic_prices(points: int = 2200, seed: int = 7) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
@@ -75,22 +85,13 @@ def load_csv(path: Path) -> pd.DataFrame:
 
 
 def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
-    feature_cols = [
-        "log_ret_1",
-        "ret_5",
-        "ret_10",
-        "vol_10",
-        "vol_20",
-        "ma_spread",
-        "rsi_14",
-    ]
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split]
     test_df = df.iloc[split:]
 
-    x_train = train_df[feature_cols]
+    x_train = train_df[FEATURE_COLS]
     y_train = train_df["target"]
-    x_test = test_df[feature_cols]
+    x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
 
     model = build_model()
@@ -112,7 +113,7 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     )
 
     importance = (
-        pd.DataFrame({"feature": feature_cols, "importance": model.feature_importances_})
+        pd.DataFrame({"feature": FEATURE_COLS, "importance": model.feature_importances_})
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
@@ -159,15 +160,6 @@ def build_model() -> RandomForestClassifier:
 
 
 def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int) -> None:
-    feature_cols = [
-        "log_ret_1",
-        "ret_5",
-        "ret_10",
-        "vol_10",
-        "vol_20",
-        "ma_spread",
-        "rsi_14",
-    ]
     minimum_train_size = max(160, len(df) // 3)
     rows = []
 
@@ -183,8 +175,8 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
             break
 
         model = build_model()
-        model.fit(train_df[feature_cols], train_df["target"])
-        preds = model.predict(test_df[feature_cols])
+        model.fit(train_df[FEATURE_COLS], train_df["target"])
+        preds = model.predict(test_df[FEATURE_COLS])
 
         rows.append(
             {
@@ -237,7 +229,7 @@ def main() -> None:
     parser.add_argument("--csv", type=Path, help="Path to CSV with date and close columns.")
     parser.add_argument("--use-synthetic", action="store_true", help="Use synthetic regime data.")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts"), help="Output artifacts directory.")
-    parser.add_argument("--walk-forward", action="store_true", help="Run expanding-window walk-forward evaluation.")
+    parser.add_argument("--skip-walk-forward", action="store_true", help="Skip expanding-window walk-forward evaluation.")
     parser.add_argument("--walk-forward-windows", type=int, default=4, help="Number of walk-forward windows to evaluate.")
     parser.add_argument("--walk-forward-test-size", type=int, default=120, help="Rows per walk-forward test window.")
     args = parser.parse_args()
@@ -252,7 +244,7 @@ def main() -> None:
 
     processed = build_features(raw)
     run_training(processed, args.artifacts)
-    if args.walk_forward:
+    if not args.skip_walk_forward:
         run_walk_forward(
             processed,
             args.artifacts,

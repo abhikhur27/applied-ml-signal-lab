@@ -19,7 +19,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
 - confusion matrix (CSV)
 - feature importance table
 - markdown run report
-- optional walk-forward metrics + markdown summary
+- walk-forward metrics + markdown summary by default
 - serialized model (`joblib`)
 
 ## Why this is useful
@@ -36,10 +36,16 @@ This repo is meant to be a practical base for:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python -m src.train --use-synthetic --walk-forward
+python -m src.train --use-synthetic
 ```
 
 Artifacts are written to `artifacts/`.
+
+If you want the fastest baseline-only pass, skip walk-forward explicitly:
+
+```bash
+python -m src.train --use-synthetic --skip-walk-forward
+```
 
 ## Use your own data
 
