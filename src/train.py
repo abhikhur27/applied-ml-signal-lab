@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import joblib
@@ -117,11 +118,26 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
+    predictions_df = test_df[["date", "close", "target"]].copy()
+    predictions_df["prediction"] = preds
+    predictions_df["target_label"] = predictions_df["target"].map(label_names)
+    predictions_df["prediction_label"] = predictions_df["prediction"].map(label_names)
+    predictions_df["correct"] = predictions_df["target"] == predictions_df["prediction"]
+    model_summary = {
+        "samples": len(df),
+        "train_rows": len(train_df),
+        "test_rows": len(test_df),
+        "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
+        "top_features": importance.head(5).to_dict(orient="records"),
+        "class_labels": label_names,
+    }
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, artifacts_dir / "regime_classifier.joblib")
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
+    predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
+    (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
 
     report_md = [
         "# Training Run Report",
@@ -146,6 +162,8 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     print(f"- {artifacts_dir / 'regime_classifier.joblib'}")
     print(f"- {artifacts_dir / 'confusion_matrix.csv'}")
     print(f"- {artifacts_dir / 'feature_importance.csv'}")
+    print(f"- {artifacts_dir / 'test_predictions.csv'}")
+    print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")
 
 

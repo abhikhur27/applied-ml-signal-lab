@@ -18,6 +18,8 @@ Applied machine learning sandbox for market-regime classification with reproduci
 - classification report
 - confusion matrix (CSV)
 - feature importance table
+- holdout predictions with target/prediction labels
+- model summary JSON for downstream scripting
 - markdown run report
 - walk-forward metrics + markdown summary by default
 - serialized model (`joblib`)
@@ -40,6 +42,12 @@ python -m src.train --use-synthetic
 ```
 
 Artifacts are written to `artifacts/`.
+
+Key outputs now include:
+
+- `test_predictions.csv`: holdout rows with actual vs predicted regime labels
+- `model_summary.json`: compact machine-readable accuracy + feature summary
+- `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
 
 If you want the fastest baseline-only pass, skip walk-forward explicitly:
 
