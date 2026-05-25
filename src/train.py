@@ -98,6 +98,7 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     model = build_model()
     model.fit(x_train, y_train)
     preds = model.predict(x_test)
+    probs = model.predict_proba(x_test)
 
     label_names = {0: "bear", 1: "neutral", 2: "bull"}
     report = classification_report(
@@ -122,12 +123,29 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     predictions_df["prediction"] = preds
     predictions_df["target_label"] = predictions_df["target"].map(label_names)
     predictions_df["prediction_label"] = predictions_df["prediction"].map(label_names)
+    predictions_df["prob_bear"] = probs[:, 0]
+    predictions_df["prob_neutral"] = probs[:, 1]
+    predictions_df["prob_bull"] = probs[:, 2]
+    predictions_df["confidence"] = probs.max(axis=1)
+    sorted_probs = np.sort(probs, axis=1)
+    predictions_df["margin_to_runner_up"] = sorted_probs[:, -1] - sorted_probs[:, -2]
     predictions_df["correct"] = predictions_df["target"] == predictions_df["prediction"]
+    confidence_by_label = (
+        predictions_df.groupby("prediction_label")["confidence"]
+        .mean()
+        .round(4)
+        .to_dict()
+    )
+    low_confidence_rate = round(float((predictions_df["confidence"] < 0.5).mean()), 4)
     model_summary = {
         "samples": len(df),
         "train_rows": len(train_df),
         "test_rows": len(test_df),
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
+        "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
+        "low_confidence_rate": low_confidence_rate,
+        "mean_confidence_by_prediction": confidence_by_label,
+        "prediction_mix": predictions_df["prediction_label"].value_counts(normalize=True).round(4).to_dict(),
         "top_features": importance.head(5).to_dict(orient="records"),
         "class_labels": label_names,
     }
@@ -145,10 +163,16 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
         f"- Samples: {len(df)}",
         f"- Train rows: {len(train_df)}",
         f"- Test rows: {len(test_df)}",
+        f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
+        f"- Low-confidence share (<0.50): {low_confidence_rate:.4f}",
         "",
         "## Classification report",
         "```",
         report,
+        "```",
+        "## Confidence summary",
+        "```",
+        predictions_df.groupby("prediction_label")[["confidence", "margin_to_runner_up"]].mean().round(4).to_string(),
         "```",
         "## Top feature importance",
         "```",
