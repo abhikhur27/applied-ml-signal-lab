@@ -76,3 +76,17 @@ python -m src.train --csv path/to/ohlcv.csv
 
 - add probability calibration and threshold tuning
 - compare tree models against temporal neural baselines
+
+## Portfolio Repro Checklist
+
+Use this sequence before publishing a run artifact:
+
+1. Baseline synthetic run:
+`python -m src.train --use-synthetic --artifacts artifacts/baseline`
+2. Baseline + walk-forward:
+`python -m src.train --use-synthetic --artifacts artifacts/walkforward`
+3. Confirm both directories include:
+- `model_summary.json`
+- `test_predictions.csv`
+- `walk_forward_metrics.csv` (for non-skip runs)
+4. In notes, distinguish single holdout accuracy from walk-forward average accuracy.
