@@ -5,24 +5,24 @@ Applied machine learning sandbox for market-regime classification with reproduci
 ## What this project does
 
 - Builds a labeled time-series dataset from either:
-- synthetic regime-switching prices
-- or user-provided OHLCV CSV data
+  - synthetic regime-switching prices
+  - user-provided OHLCV CSV data
 - Engineers features commonly used in quant workflows:
-- log returns
-- rolling volatility
-- momentum windows
-- moving-average spread
-- RSI proxy
+  - log returns
+  - rolling volatility
+  - momentum windows
+  - moving-average spread
+  - RSI proxy
 - Trains a `RandomForestClassifier` using a strict chronological split (no random shuffle leakage).
 - Produces evaluation artifacts:
-- classification report
-- confusion matrix (CSV)
-- feature importance table
-- holdout predictions with target/prediction labels
-- model summary JSON for downstream scripting
-- markdown run report
-- walk-forward metrics + markdown summary by default
-- serialized model (`joblib`)
+  - classification report
+  - confusion matrix (CSV)
+  - feature importance table
+  - holdout predictions with target/prediction labels
+  - model summary JSON for downstream scripting
+  - markdown run report
+  - walk-forward metrics + markdown summary by default
+  - serialized model (`joblib`)
 
 ## Why this is useful
 
@@ -55,6 +55,12 @@ If you want the fastest baseline-only pass, skip walk-forward explicitly:
 
 ```bash
 python -m src.train --use-synthetic --skip-walk-forward
+```
+
+To make synthetic experiments reproducible across runs and tune dataset size:
+
+```bash
+python -m src.train --use-synthetic --synthetic-seed 7 --synthetic-points 3000 --model-seed 42
 ```
 
 ## Use your own data

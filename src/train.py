@@ -85,7 +85,7 @@ def load_csv(path: Path) -> pd.DataFrame:
     return df
 
 
-def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
+def run_training(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None:
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split]
     test_df = df.iloc[split:]
@@ -95,7 +95,7 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
 
-    model = build_model()
+    model = build_model(model_seed)
     model.fit(x_train, y_train)
     preds = model.predict(x_test)
     probs = model.predict_proba(x_test)
@@ -191,17 +191,17 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path) -> None:
     print(f"- {artifacts_dir / 'run_report.md'}")
 
 
-def build_model() -> RandomForestClassifier:
+def build_model(model_seed: int) -> RandomForestClassifier:
     return RandomForestClassifier(
         n_estimators=350,
         min_samples_leaf=6,
         max_depth=8,
-        random_state=42,
+        random_state=model_seed,
         class_weight="balanced_subsample",
     )
 
 
-def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int) -> None:
+def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int, model_seed: int) -> None:
     minimum_train_size = max(160, len(df) // 3)
     rows = []
 
@@ -216,7 +216,7 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         if len(test_df) < max(12, test_size // 2):
             break
 
-        model = build_model()
+        model = build_model(model_seed)
         model.fit(train_df[FEATURE_COLS], train_df["target"])
         preds = model.predict(test_df[FEATURE_COLS])
 
@@ -274,6 +274,9 @@ def main() -> None:
     parser.add_argument("--skip-walk-forward", action="store_true", help="Skip expanding-window walk-forward evaluation.")
     parser.add_argument("--walk-forward-windows", type=int, default=4, help="Number of walk-forward windows to evaluate.")
     parser.add_argument("--walk-forward-test-size", type=int, default=120, help="Rows per walk-forward test window.")
+    parser.add_argument("--synthetic-points", type=int, default=2200, help="Number of synthetic price rows when --use-synthetic is enabled.")
+    parser.add_argument("--synthetic-seed", type=int, default=7, help="Random seed for synthetic price generation.")
+    parser.add_argument("--model-seed", type=int, default=42, help="Random seed for model training.")
     args = parser.parse_args()
 
     if not args.use_synthetic and args.csv is None:
@@ -282,16 +285,17 @@ def main() -> None:
     if args.csv is not None:
         raw = load_csv(args.csv)
     else:
-        raw = generate_synthetic_prices()
+        raw = generate_synthetic_prices(points=max(300, args.synthetic_points), seed=args.synthetic_seed)
 
     processed = build_features(raw)
-    run_training(processed, args.artifacts)
+    run_training(processed, args.artifacts, model_seed=args.model_seed)
     if not args.skip_walk_forward:
         run_walk_forward(
             processed,
             args.artifacts,
             windows=max(1, args.walk_forward_windows),
             test_size=max(20, args.walk_forward_test_size),
+            model_seed=args.model_seed,
         )
 
 
