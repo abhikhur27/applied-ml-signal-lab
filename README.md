@@ -97,3 +97,9 @@ Use this sequence before publishing a run artifact:
 - `test_predictions.csv`
 - `walk_forward_metrics.csv` (for non-skip runs)
 4. In notes, distinguish single holdout accuracy from walk-forward average accuracy.
+
+## Portfolio Positioning
+
+- Project type: Python CLI/ML workflow
+- Verification path: python -m src.train --help
+
