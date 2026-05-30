@@ -82,7 +82,26 @@ def load_csv(path: Path) -> pd.DataFrame:
     if "date" not in df.columns or "close" not in df.columns:
         raise ValueError("CSV must contain `date` and `close` columns.")
     df["date"] = pd.to_datetime(df["date"])
-    return df
+    return validate_price_series(df)
+
+
+def validate_price_series(df: pd.DataFrame) -> pd.DataFrame:
+    cleaned = df[["date", "close"]].copy()
+    cleaned["close"] = pd.to_numeric(cleaned["close"], errors="coerce")
+
+    invalid_close = cleaned["close"].isna().sum()
+    if invalid_close:
+        raise ValueError(f"CSV contains {invalid_close} non-numeric close values.")
+
+    non_positive = int((cleaned["close"] <= 0).sum())
+    if non_positive:
+        raise ValueError("Close prices must be strictly positive for log-return feature engineering.")
+
+    duplicate_dates = int(cleaned["date"].duplicated().sum())
+    if duplicate_dates:
+        raise ValueError(f"CSV contains {duplicate_dates} duplicate date rows; deduplicate before training.")
+
+    return cleaned.sort_values("date").reset_index(drop=True)
 
 
 def run_training(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None:
@@ -286,6 +305,7 @@ def main() -> None:
         raw = load_csv(args.csv)
     else:
         raw = generate_synthetic_prices(points=max(300, args.synthetic_points), seed=args.synthetic_seed)
+        raw = validate_price_series(raw)
 
     processed = build_features(raw)
     run_training(processed, args.artifacts, model_seed=args.model_seed)

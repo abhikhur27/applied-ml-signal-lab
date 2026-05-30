@@ -7,6 +7,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
 - Builds a labeled time-series dataset from either:
   - synthetic regime-switching prices
   - user-provided OHLCV CSV data
+- Input validation now hard-fails on duplicate dates, non-numeric closes, or non-positive close values before feature engineering.
 - Engineers features commonly used in quant workflows:
   - log returns
   - rolling volatility
