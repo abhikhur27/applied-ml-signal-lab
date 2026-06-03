@@ -103,3 +103,10 @@ Use this sequence before publishing a run artifact:
 - Project type: Python CLI/ML workflow
 - Verification path: python -m src.train --help
 
+## Artifact reading guide
+
+- `model_summary.json`: quickest machine-readable snapshot of accuracy, class mix, and confidence posture
+- `test_predictions.csv`: holdout prediction ledger for false-positive / false-negative review
+- `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
+- `report.md`: human-facing summary worth linking in notes or portfolio discussion
+
