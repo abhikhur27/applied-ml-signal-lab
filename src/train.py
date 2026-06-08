@@ -180,14 +180,24 @@ def run_training(
         "low_confidence_rate": low_confidence_rate,
         "mean_confidence_by_prediction": confidence_by_label,
         "prediction_mix": predictions_df["prediction_label"].value_counts(normalize=True).round(4).to_dict(),
+        "dataset_target_mix": df["target"].map(label_names).value_counts(normalize=True).round(4).to_dict(),
         "top_features": importance.head(5).to_dict(orient="records"),
         "class_labels": label_names,
     }
+    class_balance = (
+        df["target"]
+        .map(label_names)
+        .value_counts()
+        .rename_axis("label")
+        .reset_index(name="rows")
+    )
+    class_balance["share"] = (class_balance["rows"] / len(df)).round(4)
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, artifacts_dir / "regime_classifier.joblib")
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
+    class_balance.to_csv(artifacts_dir / "class_balance.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
 
@@ -214,6 +224,10 @@ def run_training(
         "```",
         importance.head(7).to_string(index=False),
         "```",
+        "## Dataset class balance",
+        "```",
+        class_balance.to_string(index=False),
+        "```",
     ]
     (artifacts_dir / "run_report.md").write_text("\n".join(report_md), encoding="utf-8")
 
@@ -222,6 +236,7 @@ def run_training(
     print(f"- {artifacts_dir / 'regime_classifier.joblib'}")
     print(f"- {artifacts_dir / 'confusion_matrix.csv'}")
     print(f"- {artifacts_dir / 'feature_importance.csv'}")
+    print(f"- {artifacts_dir / 'class_balance.csv'}")
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")

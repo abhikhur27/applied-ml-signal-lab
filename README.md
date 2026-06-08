@@ -50,6 +50,7 @@ Key outputs now include:
 - `test_predictions.csv` now also includes per-class probabilities, confidence, and margin to runner-up
 - `model_summary.json`: compact machine-readable accuracy + feature summary
 - `model_summary.json` now includes confidence posture and prediction mix
+- `class_balance.csv`: dataset label mix so class skew is visible before you trust the accuracy
 - `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
 
 If you want the fastest baseline-only pass, skip walk-forward explicitly:
