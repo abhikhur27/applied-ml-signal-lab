@@ -50,7 +50,14 @@ def generate_synthetic_prices(points: int = 2200, seed: int = 7) -> pd.DataFrame
     return pd.DataFrame({"date": dates, "close": prices})
 
 
-def build_features(data: pd.DataFrame) -> pd.DataFrame:
+def build_features(data: pd.DataFrame, bull_threshold: float = 0.003, bear_threshold: float = -0.003) -> pd.DataFrame:
+    if bull_threshold <= 0:
+        raise ValueError("bull_threshold must be positive.")
+    if bear_threshold >= 0:
+        raise ValueError("bear_threshold must be negative.")
+    if bull_threshold <= abs(bear_threshold) / 10:
+        raise ValueError("bull_threshold is unrealistically tight relative to the bear threshold.")
+
     df = data.copy()
     df = df.sort_values("date").reset_index(drop=True)
     df["log_ret_1"] = np.log(df["close"]).diff()
@@ -70,7 +77,7 @@ def build_features(data: pd.DataFrame) -> pd.DataFrame:
 
     future_ret = df["close"].shift(-1) / df["close"] - 1
     df["target"] = np.select(
-        [future_ret > 0.003, future_ret < -0.003],
+        [future_ret > bull_threshold, future_ret < bear_threshold],
         [2, 0],
         default=1,
     )
@@ -104,7 +111,13 @@ def validate_price_series(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned.sort_values("date").reset_index(drop=True)
 
 
-def run_training(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None:
+def run_training(
+    df: pd.DataFrame,
+    artifacts_dir: Path,
+    model_seed: int,
+    bull_threshold: float,
+    bear_threshold: float,
+) -> None:
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split]
     test_df = df.iloc[split:]
@@ -160,6 +173,8 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None
         "samples": len(df),
         "train_rows": len(train_df),
         "test_rows": len(test_df),
+        "bull_threshold": bull_threshold,
+        "bear_threshold": bear_threshold,
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
         "low_confidence_rate": low_confidence_rate,
@@ -182,6 +197,8 @@ def run_training(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None
         f"- Samples: {len(df)}",
         f"- Train rows: {len(train_df)}",
         f"- Test rows: {len(test_df)}",
+        f"- Bull threshold: {bull_threshold:.4f}",
+        f"- Bear threshold: {bear_threshold:.4f}",
         f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
         f"- Low-confidence share (<0.50): {low_confidence_rate:.4f}",
         "",
@@ -296,6 +313,8 @@ def main() -> None:
     parser.add_argument("--synthetic-points", type=int, default=2200, help="Number of synthetic price rows when --use-synthetic is enabled.")
     parser.add_argument("--synthetic-seed", type=int, default=7, help="Random seed for synthetic price generation.")
     parser.add_argument("--model-seed", type=int, default=42, help="Random seed for model training.")
+    parser.add_argument("--bull-threshold", type=float, default=0.003, help="Future-return cutoff for the bull label.")
+    parser.add_argument("--bear-threshold", type=float, default=-0.003, help="Future-return cutoff for the bear label.")
     args = parser.parse_args()
 
     if not args.use_synthetic and args.csv is None:
@@ -307,8 +326,14 @@ def main() -> None:
         raw = generate_synthetic_prices(points=max(300, args.synthetic_points), seed=args.synthetic_seed)
         raw = validate_price_series(raw)
 
-    processed = build_features(raw)
-    run_training(processed, args.artifacts, model_seed=args.model_seed)
+    processed = build_features(raw, bull_threshold=args.bull_threshold, bear_threshold=args.bear_threshold)
+    run_training(
+        processed,
+        args.artifacts,
+        model_seed=args.model_seed,
+        bull_threshold=args.bull_threshold,
+        bear_threshold=args.bear_threshold,
+    )
     if not args.skip_walk_forward:
         run_walk_forward(
             processed,

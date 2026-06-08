@@ -110,3 +110,11 @@ Use this sequence before publishing a run artifact:
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
 - `report.md`: human-facing summary worth linking in notes or portfolio discussion
 
+## Label Tuning
+
+You can tighten or relax the bull/bear labeling cutoffs without editing code:
+
+```bash
+python -m src.train --csv path/to/ohlcv.csv --bull-threshold 0.004 --bear-threshold -0.004
+```
+
