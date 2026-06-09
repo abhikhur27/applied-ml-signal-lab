@@ -296,6 +296,15 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
 
     walk_forward_df = pd.DataFrame(rows)
     walk_forward_df.to_csv(artifacts_dir / "walk_forward_metrics.csv", index=False)
+    summary_payload = {
+        "windows_completed": int(len(walk_forward_df)),
+        "mean_accuracy": round(float(walk_forward_df["accuracy"].mean()), 4),
+        "best_window_accuracy": round(float(walk_forward_df["accuracy"].max()), 4),
+        "worst_window_accuracy": round(float(walk_forward_df["accuracy"].min()), 4),
+        "mean_bull_share": round(float(walk_forward_df["bull_share"].mean()), 4),
+        "mean_bear_share": round(float(walk_forward_df["bear_share"].mean()), 4),
+    }
+    (artifacts_dir / "walk_forward_summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
     report_lines = [
         "# Walk-Forward Evaluation",
@@ -315,6 +324,7 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
     print("\nWalk-forward evaluation complete:")
     print(f"- {artifacts_dir / 'walk_forward_metrics.csv'}")
     print(f"- {artifacts_dir / 'walk_forward_report.md'}")
+    print(f"- {artifacts_dir / 'walk_forward_summary.json'}")
 
 
 def main() -> None:
