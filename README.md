@@ -23,6 +23,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - model summary JSON for downstream scripting
   - markdown run report
   - walk-forward metrics + markdown summary by default
+  - optional threshold-sweep CSV + markdown report for label-cutoff tuning
   - serialized model (`joblib`)
 
 ## Why this is useful
@@ -64,6 +65,14 @@ To make synthetic experiments reproducible across runs and tune dataset size:
 ```bash
 python -m src.train --use-synthetic --synthetic-seed 7 --synthetic-points 3000 --model-seed 42
 ```
+
+To compare multiple symmetric bull/bear label thresholds before settling on one:
+
+```bash
+python -m src.train --use-synthetic --threshold-sweep --threshold-sweep-values 0.002,0.003,0.004,0.005
+```
+
+That writes `threshold_sweep.csv` and `threshold_sweep_report.md` alongside the normal training artifacts.
 
 ## Use your own data
 

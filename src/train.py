@@ -252,6 +252,86 @@ def build_model(model_seed: int) -> RandomForestClassifier:
     )
 
 
+def parse_threshold_values(raw: str) -> list[float]:
+    values = []
+    for token in raw.split(","):
+        stripped = token.strip()
+        if not stripped:
+            continue
+        value = float(stripped)
+        if value <= 0:
+            raise ValueError("Threshold sweep values must be positive.")
+        values.append(value)
+
+    unique_values = sorted(set(values))
+    if not unique_values:
+        raise ValueError("Provide at least one positive threshold sweep value.")
+    return unique_values
+
+
+def run_threshold_sweep(raw: pd.DataFrame, artifacts_dir: Path, model_seed: int, threshold_values: list[float]) -> None:
+    rows = []
+
+    for threshold in threshold_values:
+        processed = build_features(raw, bull_threshold=threshold, bear_threshold=-threshold)
+        split = int(len(processed) * 0.8)
+        train_df = processed.iloc[:split]
+        test_df = processed.iloc[split:]
+        if train_df.empty or test_df.empty:
+            continue
+
+        model = build_model(model_seed)
+        model.fit(train_df[FEATURE_COLS], train_df["target"])
+        preds = model.predict(test_df[FEATURE_COLS])
+        probs = model.predict_proba(test_df[FEATURE_COLS])
+
+        rows.append(
+            {
+                "threshold": round(threshold, 4),
+                "samples": len(processed),
+                "test_accuracy": round(float(accuracy_score(test_df["target"], preds)), 4),
+                "mean_confidence": round(float(probs.max(axis=1).mean()), 4),
+                "low_confidence_rate": round(float((probs.max(axis=1) < 0.5).mean()), 4),
+                "bull_share": round(float((processed["target"] == 2).mean()), 4),
+                "neutral_share": round(float((processed["target"] == 1).mean()), 4),
+                "bear_share": round(float((processed["target"] == 0).mean()), 4),
+            }
+        )
+
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        (artifacts_dir / "threshold_sweep_report.md").write_text(
+            "# Threshold Sweep\n\nNo valid threshold sweep rows were generated.\n",
+            encoding="utf-8",
+        )
+        print("Threshold sweep skipped: no valid threshold combinations were generated.")
+        return
+
+    sweep_df = pd.DataFrame(rows).sort_values(["test_accuracy", "mean_confidence"], ascending=[False, False]).reset_index(drop=True)
+    sweep_df.to_csv(artifacts_dir / "threshold_sweep.csv", index=False)
+
+    best = sweep_df.iloc[0]
+    report_lines = [
+        "# Threshold Sweep",
+        "",
+        f"- Thresholds tested: {', '.join(f'{value:.4f}' for value in threshold_values)}",
+        f"- Best threshold by holdout accuracy: {best['threshold']:.4f}",
+        f"- Best holdout accuracy: {best['test_accuracy']:.4f}",
+        f"- Best mean confidence: {best['mean_confidence']:.4f}",
+        "",
+        "## Threshold comparison",
+        "```",
+        sweep_df.to_string(index=False),
+        "```",
+    ]
+    (artifacts_dir / "threshold_sweep_report.md").write_text("\n".join(report_lines), encoding="utf-8")
+
+    print("\nThreshold sweep complete:")
+    print(f"- {artifacts_dir / 'threshold_sweep.csv'}")
+    print(f"- {artifacts_dir / 'threshold_sweep_report.md'}")
+
+
 def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int, model_seed: int) -> None:
     minimum_train_size = max(160, len(df) // 3)
     rows = []
@@ -340,6 +420,12 @@ def main() -> None:
     parser.add_argument("--model-seed", type=int, default=42, help="Random seed for model training.")
     parser.add_argument("--bull-threshold", type=float, default=0.003, help="Future-return cutoff for the bull label.")
     parser.add_argument("--bear-threshold", type=float, default=-0.003, help="Future-return cutoff for the bear label.")
+    parser.add_argument("--threshold-sweep", action="store_true", help="Evaluate multiple symmetric bull/bear label thresholds.")
+    parser.add_argument(
+        "--threshold-sweep-values",
+        default="0.002,0.003,0.004,0.005",
+        help="Comma-separated positive threshold values used when --threshold-sweep is enabled.",
+    )
     args = parser.parse_args()
 
     if not args.use_synthetic and args.csv is None:
@@ -366,6 +452,13 @@ def main() -> None:
             windows=max(1, args.walk_forward_windows),
             test_size=max(20, args.walk_forward_test_size),
             model_seed=args.model_seed,
+        )
+    if args.threshold_sweep:
+        run_threshold_sweep(
+            raw,
+            args.artifacts,
+            model_seed=args.model_seed,
+            threshold_values=parse_threshold_values(args.threshold_sweep_values),
         )
 
 
