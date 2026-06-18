@@ -168,6 +168,28 @@ def run_training(
         .round(4)
         .to_dict()
     )
+    confidence_bins = pd.cut(
+        predictions_df["confidence"],
+        bins=[0.0, 0.45, 0.60, 0.75, 1.000001],
+        labels=["very_low", "guarded", "usable", "high"],
+        include_lowest=True,
+        right=False,
+    )
+    confidence_bucket_df = (
+        predictions_df.assign(confidence_bucket=confidence_bins)
+        .groupby("confidence_bucket", observed=False)
+        .agg(
+            rows=("confidence", "size"),
+            mean_confidence=("confidence", "mean"),
+            accuracy=("correct", "mean"),
+            mean_margin=("margin_to_runner_up", "mean"),
+        )
+        .reset_index()
+    )
+    confidence_bucket_df["rows"] = confidence_bucket_df["rows"].fillna(0).astype(int)
+    confidence_bucket_df["share"] = (confidence_bucket_df["rows"] / len(predictions_df)).round(4)
+    for column in ["mean_confidence", "accuracy", "mean_margin"]:
+        confidence_bucket_df[column] = confidence_bucket_df[column].fillna(0.0).round(4)
     low_confidence_rate = round(float((predictions_df["confidence"] < 0.5).mean()), 4)
     model_summary = {
         "samples": len(df),
@@ -179,6 +201,7 @@ def run_training(
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
         "low_confidence_rate": low_confidence_rate,
         "mean_confidence_by_prediction": confidence_by_label,
+        "confidence_buckets": confidence_bucket_df.to_dict(orient="records"),
         "prediction_mix": predictions_df["prediction_label"].value_counts(normalize=True).round(4).to_dict(),
         "dataset_target_mix": df["target"].map(label_names).value_counts(normalize=True).round(4).to_dict(),
         "top_features": importance.head(5).to_dict(orient="records"),
@@ -198,6 +221,7 @@ def run_training(
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
     class_balance.to_csv(artifacts_dir / "class_balance.csv", index=False)
+    confidence_bucket_df.to_csv(artifacts_dir / "confidence_buckets.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
 
@@ -228,6 +252,10 @@ def run_training(
         "```",
         class_balance.to_string(index=False),
         "```",
+        "## Confidence buckets",
+        "```",
+        confidence_bucket_df.to_string(index=False),
+        "```",
     ]
     (artifacts_dir / "run_report.md").write_text("\n".join(report_md), encoding="utf-8")
 
@@ -237,6 +265,7 @@ def run_training(
     print(f"- {artifacts_dir / 'confusion_matrix.csv'}")
     print(f"- {artifacts_dir / 'feature_importance.csv'}")
     print(f"- {artifacts_dir / 'class_balance.csv'}")
+    print(f"- {artifacts_dir / 'confidence_buckets.csv'}")
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")

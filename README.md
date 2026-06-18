@@ -19,6 +19,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - classification report
   - confusion matrix (CSV)
   - feature importance table
+  - confidence bucket table for triaging low-vs-high conviction predictions
   - holdout predictions with target/prediction labels
   - model summary JSON for downstream scripting
   - markdown run report
@@ -51,6 +52,7 @@ Key outputs now include:
 - `test_predictions.csv` now also includes per-class probabilities, confidence, and margin to runner-up
 - `model_summary.json`: compact machine-readable accuracy + feature summary
 - `model_summary.json` now includes confidence posture and prediction mix
+- `confidence_buckets.csv`: row counts and accuracy by confidence band so weak predictions are easier to triage
 - `class_balance.csv`: dataset label mix so class skew is visible before you trust the accuracy
 - `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
 
