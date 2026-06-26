@@ -361,6 +361,79 @@ def run_threshold_sweep(raw: pd.DataFrame, artifacts_dir: Path, model_seed: int,
     print(f"- {artifacts_dir / 'threshold_sweep_report.md'}")
 
 
+def run_feature_ablation(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None:
+    split = int(len(df) * 0.8)
+    train_df = df.iloc[:split]
+    test_df = df.iloc[split:]
+
+    if train_df.empty or test_df.empty:
+        (artifacts_dir / "feature_ablation_report.md").write_text(
+            "# Feature Ablation\n\nDataset split did not leave enough rows for ablation.\n",
+            encoding="utf-8",
+        )
+        print("Feature ablation skipped: not enough rows after the chronological split.")
+        return
+
+    rows = []
+    baseline_model = build_model(model_seed)
+    baseline_model.fit(train_df[FEATURE_COLS], train_df["target"])
+    baseline_accuracy = float(accuracy_score(test_df["target"], baseline_model.predict(test_df[FEATURE_COLS])))
+
+    rows.append(
+        {
+            "feature_removed": "none",
+            "feature_count": len(FEATURE_COLS),
+            "test_accuracy": round(baseline_accuracy, 4),
+            "accuracy_delta": 0.0,
+        }
+    )
+
+    for feature in FEATURE_COLS:
+        ablated_features = [column for column in FEATURE_COLS if column != feature]
+        model = build_model(model_seed)
+        model.fit(train_df[ablated_features], train_df["target"])
+        accuracy = float(accuracy_score(test_df["target"], model.predict(test_df[ablated_features])))
+        rows.append(
+            {
+                "feature_removed": feature,
+                "feature_count": len(ablated_features),
+                "test_accuracy": round(accuracy, 4),
+                "accuracy_delta": round(accuracy - baseline_accuracy, 4),
+            }
+        )
+
+    ablation_df = pd.DataFrame(rows).sort_values(
+        ["feature_removed", "test_accuracy"],
+        ascending=[True, False],
+    )
+    ablation_df = pd.concat(
+        [
+            ablation_df[ablation_df["feature_removed"] == "none"],
+            ablation_df[ablation_df["feature_removed"] != "none"].sort_values("accuracy_delta"),
+        ],
+        ignore_index=True,
+    )
+    ablation_df.to_csv(artifacts_dir / "feature_ablation.csv", index=False)
+
+    most_helpful = ablation_df[ablation_df["feature_removed"] != "none"].iloc[0]
+    report_lines = [
+        "# Feature Ablation",
+        "",
+        f"- Baseline holdout accuracy: {baseline_accuracy:.4f}",
+        f"- Largest accuracy drop: removing `{most_helpful['feature_removed']}` changed accuracy by {most_helpful['accuracy_delta']:.4f}",
+        "",
+        "## Ablation table",
+        "```",
+        ablation_df.to_string(index=False),
+        "```",
+    ]
+    (artifacts_dir / "feature_ablation_report.md").write_text("\n".join(report_lines), encoding="utf-8")
+
+    print("\nFeature ablation complete:")
+    print(f"- {artifacts_dir / 'feature_ablation.csv'}")
+    print(f"- {artifacts_dir / 'feature_ablation_report.md'}")
+
+
 def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int, model_seed: int) -> None:
     minimum_train_size = max(160, len(df) // 3)
     rows = []
@@ -450,6 +523,7 @@ def main() -> None:
     parser.add_argument("--bull-threshold", type=float, default=0.003, help="Future-return cutoff for the bull label.")
     parser.add_argument("--bear-threshold", type=float, default=-0.003, help="Future-return cutoff for the bear label.")
     parser.add_argument("--threshold-sweep", action="store_true", help="Evaluate multiple symmetric bull/bear label thresholds.")
+    parser.add_argument("--feature-ablation", action="store_true", help="Measure holdout accuracy after dropping one engineered feature at a time.")
     parser.add_argument(
         "--threshold-sweep-values",
         default="0.002,0.003,0.004,0.005",
@@ -488,6 +562,12 @@ def main() -> None:
             args.artifacts,
             model_seed=args.model_seed,
             threshold_values=parse_threshold_values(args.threshold_sweep_values),
+        )
+    if args.feature_ablation:
+        run_feature_ablation(
+            processed,
+            args.artifacts,
+            model_seed=args.model_seed,
         )
 
 

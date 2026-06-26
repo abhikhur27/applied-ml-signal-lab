@@ -23,9 +23,10 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - holdout predictions with target/prediction labels
   - model summary JSON for downstream scripting
   - markdown run report
-  - walk-forward metrics + markdown summary by default
-  - optional threshold-sweep CSV + markdown report for label-cutoff tuning
-  - serialized model (`joblib`)
+- walk-forward metrics + markdown summary by default
+- optional threshold-sweep CSV + markdown report for label-cutoff tuning
+- optional feature-ablation CSV + markdown report for drop-one-feature sensitivity
+- serialized model (`joblib`)
 
 ## Why this is useful
 
@@ -75,6 +76,14 @@ python -m src.train --use-synthetic --threshold-sweep --threshold-sweep-values 0
 ```
 
 That writes `threshold_sweep.csv` and `threshold_sweep_report.md` alongside the normal training artifacts.
+
+To measure which engineered features the holdout result depends on most:
+
+```bash
+python -m src.train --use-synthetic --feature-ablation
+```
+
+That writes `feature_ablation.csv` and `feature_ablation_report.md` beside the normal training artifacts.
 
 ## Use your own data
 
