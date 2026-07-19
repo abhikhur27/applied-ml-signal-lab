@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
+from sklearn.metrics import brier_score_loss
 from sklearn.metrics import classification_report, confusion_matrix
 
 FEATURE_COLS = [
@@ -126,6 +127,7 @@ def run_training(
     y_train = train_df["target"]
     x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
+    feature_drift_df = build_feature_drift_report(x_train, x_test)
 
     model = build_model(model_seed)
     model.fit(x_train, y_train)
@@ -190,7 +192,37 @@ def run_training(
     confidence_bucket_df["share"] = (confidence_bucket_df["rows"] / len(predictions_df)).round(4)
     for column in ["mean_confidence", "accuracy", "mean_margin"]:
         confidence_bucket_df[column] = confidence_bucket_df[column].fillna(0.0).round(4)
+    calibration_df = (
+        predictions_df.assign(
+            confidence_band=pd.cut(
+                predictions_df["confidence"],
+                bins=np.linspace(0.0, 1.0, 11),
+                labels=[f"{start/10:.1f}-{(start+1)/10:.1f}" for start in range(10)],
+                include_lowest=True,
+                right=True,
+            )
+        )
+        .groupby("confidence_band", observed=False)
+        .agg(
+            rows=("confidence", "size"),
+            mean_confidence=("confidence", "mean"),
+            empirical_accuracy=("correct", "mean"),
+            mean_margin=("margin_to_runner_up", "mean"),
+        )
+        .reset_index()
+    )
+    calibration_df["rows"] = calibration_df["rows"].fillna(0).astype(int)
+    calibration_df["share"] = (calibration_df["rows"] / len(predictions_df)).round(4)
+    calibration_df["confidence_gap"] = (
+        calibration_df["mean_confidence"].fillna(0.0) - calibration_df["empirical_accuracy"].fillna(0.0)
+    ).round(4)
+    for column in ["mean_confidence", "empirical_accuracy", "mean_margin"]:
+        calibration_df[column] = calibration_df[column].fillna(0.0).round(4)
     low_confidence_rate = round(float((predictions_df["confidence"] < 0.5).mean()), 4)
+    top_class_brier = round(
+        float(brier_score_loss(predictions_df["correct"].astype(int), predictions_df["confidence"])),
+        4,
+    )
     model_summary = {
         "samples": len(df),
         "train_rows": len(train_df),
@@ -200,11 +232,14 @@ def run_training(
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
         "low_confidence_rate": low_confidence_rate,
+        "top_class_brier_score": top_class_brier,
         "mean_confidence_by_prediction": confidence_by_label,
         "confidence_buckets": confidence_bucket_df.to_dict(orient="records"),
+        "confidence_calibration": calibration_df.to_dict(orient="records"),
         "prediction_mix": predictions_df["prediction_label"].value_counts(normalize=True).round(4).to_dict(),
         "dataset_target_mix": df["target"].map(label_names).value_counts(normalize=True).round(4).to_dict(),
         "top_features": importance.head(5).to_dict(orient="records"),
+        "feature_drift": feature_drift_df.to_dict(orient="records"),
         "class_labels": label_names,
     }
     class_balance = (
@@ -221,7 +256,9 @@ def run_training(
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
     class_balance.to_csv(artifacts_dir / "class_balance.csv", index=False)
+    feature_drift_df.to_csv(artifacts_dir / "feature_drift.csv", index=False)
     confidence_bucket_df.to_csv(artifacts_dir / "confidence_buckets.csv", index=False)
+    calibration_df.to_csv(artifacts_dir / "confidence_calibration.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
 
@@ -235,6 +272,7 @@ def run_training(
         f"- Bear threshold: {bear_threshold:.4f}",
         f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
         f"- Low-confidence share (<0.50): {low_confidence_rate:.4f}",
+        f"- Top-class Brier score: {top_class_brier:.4f}",
         "",
         "## Classification report",
         "```",
@@ -252,9 +290,17 @@ def run_training(
         "```",
         class_balance.to_string(index=False),
         "```",
+        "## Feature drift",
+        "```",
+        feature_drift_df.to_string(index=False),
+        "```",
         "## Confidence buckets",
         "```",
         confidence_bucket_df.to_string(index=False),
+        "```",
+        "## Confidence calibration",
+        "```",
+        calibration_df.to_string(index=False),
         "```",
     ]
     (artifacts_dir / "run_report.md").write_text("\n".join(report_md), encoding="utf-8")
@@ -265,7 +311,9 @@ def run_training(
     print(f"- {artifacts_dir / 'confusion_matrix.csv'}")
     print(f"- {artifacts_dir / 'feature_importance.csv'}")
     print(f"- {artifacts_dir / 'class_balance.csv'}")
+    print(f"- {artifacts_dir / 'feature_drift.csv'}")
     print(f"- {artifacts_dir / 'confidence_buckets.csv'}")
+    print(f"- {artifacts_dir / 'confidence_calibration.csv'}")
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")
@@ -279,6 +327,34 @@ def build_model(model_seed: int) -> RandomForestClassifier:
         random_state=model_seed,
         class_weight="balanced_subsample",
     )
+
+
+def build_feature_drift_report(train_features: pd.DataFrame, test_features: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for feature in FEATURE_COLS:
+        train_series = train_features[feature]
+        test_series = test_features[feature]
+        train_std = float(train_series.std(ddof=0))
+        test_std = float(test_series.std(ddof=0))
+        mean_shift_sigma = 0.0 if train_std == 0 else float((test_series.mean() - train_series.mean()) / train_std)
+        std_ratio = 0.0 if train_std == 0 else float(test_std / train_std)
+        q50_shift_sigma = 0.0 if train_std == 0 else float((test_series.median() - train_series.median()) / train_std)
+        rows.append(
+            {
+                "feature": feature,
+                "train_mean": round(float(train_series.mean()), 6),
+                "test_mean": round(float(test_series.mean()), 6),
+                "train_std": round(train_std, 6),
+                "test_std": round(test_std, 6),
+                "mean_shift_sigma": round(mean_shift_sigma, 4),
+                "median_shift_sigma": round(q50_shift_sigma, 4),
+                "std_ratio": round(std_ratio, 4),
+            }
+        )
+
+    drift_df = pd.DataFrame(rows)
+    drift_df["abs_mean_shift_sigma"] = drift_df["mean_shift_sigma"].abs().round(4)
+    return drift_df.sort_values(["abs_mean_shift_sigma", "std_ratio"], ascending=[False, False]).reset_index(drop=True)
 
 
 def parse_threshold_values(raw: str) -> list[float]:

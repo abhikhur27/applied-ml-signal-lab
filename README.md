@@ -19,8 +19,9 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - classification report
   - confusion matrix (CSV)
   - feature importance table
-  - confidence bucket table for triaging low-vs-high conviction predictions
-  - holdout predictions with target/prediction labels
+- confidence bucket table for triaging low-vs-high conviction predictions
+- confidence calibration table for spotting overconfident vs underconfident predictions
+- holdout predictions with target/prediction labels
   - model summary JSON for downstream scripting
   - markdown run report
 - walk-forward metrics + markdown summary by default
@@ -54,7 +55,9 @@ Key outputs now include:
 - `model_summary.json`: compact machine-readable accuracy + feature summary
 - `model_summary.json` now includes confidence posture and prediction mix
 - `confidence_buckets.csv`: row counts and accuracy by confidence band so weak predictions are easier to triage
+- `confidence_calibration.csv`: decile-style confidence calibration table with empirical accuracy and confidence gap
 - `class_balance.csv`: dataset label mix so class skew is visible before you trust the accuracy
+- `feature_drift.csv`: train-vs-test feature shift table so covariate drift is visible before you trust a holdout win
 - `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
 
 If you want the fastest baseline-only pass, skip walk-forward explicitly:
@@ -129,6 +132,7 @@ Use this sequence before publishing a run artifact:
 - `model_summary.json`: quickest machine-readable snapshot of accuracy, class mix, and confidence posture
 - `test_predictions.csv`: holdout prediction ledger for false-positive / false-negative review
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
+- `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
 - `report.md`: human-facing summary worth linking in notes or portfolio discussion
 
 ## Label Tuning
