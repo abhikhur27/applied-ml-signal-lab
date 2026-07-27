@@ -7,7 +7,9 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.frozen import FrozenEstimator
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import brier_score_loss
 from sklearn.metrics import classification_report, confusion_matrix
@@ -118,21 +120,30 @@ def run_training(
     model_seed: int,
     bull_threshold: float,
     bear_threshold: float,
+    calibrate_probabilities: bool,
+    calibration_fraction: float,
+    calibration_method: str,
 ) -> None:
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split]
     test_df = df.iloc[split:]
 
-    x_train = train_df[FEATURE_COLS]
-    y_train = train_df["target"]
     x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
-    feature_drift_df = build_feature_drift_report(x_train, x_test)
-
-    model = build_model(model_seed)
-    model.fit(x_train, y_train)
-    preds = model.predict(x_test)
-    probs = model.predict_proba(x_test)
+    fitted_model, calibration_summary = fit_model_with_optional_calibration(
+        train_df=train_df,
+        model_seed=model_seed,
+        calibrate_probabilities=calibrate_probabilities,
+        calibration_fraction=calibration_fraction,
+        calibration_method=calibration_method,
+    )
+    feature_drift_df = build_feature_drift_report(
+        calibration_summary["fit_features"],
+        x_test,
+    )
+    baseline_probs = calibration_summary["baseline_probabilities"](x_test)
+    probs = fitted_model.predict_proba(x_test)
+    preds = fitted_model.predict(x_test)
 
     label_names = {0: "bear", 1: "neutral", 2: "bull"}
     report = classification_report(
@@ -149,7 +160,7 @@ def run_training(
     )
 
     importance = (
-        pd.DataFrame({"feature": FEATURE_COLS, "importance": model.feature_importances_})
+        pd.DataFrame({"feature": FEATURE_COLS, "importance": calibration_summary["importance_model"].feature_importances_})
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
@@ -157,10 +168,15 @@ def run_training(
     predictions_df["prediction"] = preds
     predictions_df["target_label"] = predictions_df["target"].map(label_names)
     predictions_df["prediction_label"] = predictions_df["prediction"].map(label_names)
+    predictions_df["baseline_prob_bear"] = baseline_probs[:, 0]
+    predictions_df["baseline_prob_neutral"] = baseline_probs[:, 1]
+    predictions_df["baseline_prob_bull"] = baseline_probs[:, 2]
     predictions_df["prob_bear"] = probs[:, 0]
     predictions_df["prob_neutral"] = probs[:, 1]
     predictions_df["prob_bull"] = probs[:, 2]
+    predictions_df["baseline_confidence"] = baseline_probs.max(axis=1)
     predictions_df["confidence"] = probs.max(axis=1)
+    predictions_df["confidence_delta"] = predictions_df["confidence"] - predictions_df["baseline_confidence"]
     sorted_probs = np.sort(probs, axis=1)
     predictions_df["margin_to_runner_up"] = sorted_probs[:, -1] - sorted_probs[:, -2]
     predictions_df["correct"] = predictions_df["target"] == predictions_df["prediction"]
@@ -219,9 +235,20 @@ def run_training(
     for column in ["mean_confidence", "empirical_accuracy", "mean_margin"]:
         calibration_df[column] = calibration_df[column].fillna(0.0).round(4)
     low_confidence_rate = round(float((predictions_df["confidence"] < 0.5).mean()), 4)
+    baseline_low_confidence_rate = round(float((predictions_df["baseline_confidence"] < 0.5).mean()), 4)
     top_class_brier = round(
         float(brier_score_loss(predictions_df["correct"].astype(int), predictions_df["confidence"])),
         4,
+    )
+    baseline_top_class_brier = round(
+        float(brier_score_loss(predictions_df["correct"].astype(int), predictions_df["baseline_confidence"])),
+        4,
+    )
+    probability_comparison_df = build_probability_comparison_report(
+        y_test=y_test.to_numpy(),
+        baseline_probs=baseline_probs,
+        calibrated_probs=probs,
+        label_names=label_names,
     )
     model_summary = {
         "samples": len(df),
@@ -229,13 +256,18 @@ def run_training(
         "test_rows": len(test_df),
         "bull_threshold": bull_threshold,
         "bear_threshold": bear_threshold,
+        "probability_calibration": calibration_summary["metadata"],
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
+        "baseline_mean_confidence": round(float(predictions_df["baseline_confidence"].mean()), 4),
         "low_confidence_rate": low_confidence_rate,
+        "baseline_low_confidence_rate": baseline_low_confidence_rate,
         "top_class_brier_score": top_class_brier,
+        "baseline_top_class_brier_score": baseline_top_class_brier,
         "mean_confidence_by_prediction": confidence_by_label,
         "confidence_buckets": confidence_bucket_df.to_dict(orient="records"),
         "confidence_calibration": calibration_df.to_dict(orient="records"),
+        "probability_comparison": probability_comparison_df.to_dict(orient="records"),
         "prediction_mix": predictions_df["prediction_label"].value_counts(normalize=True).round(4).to_dict(),
         "dataset_target_mix": df["target"].map(label_names).value_counts(normalize=True).round(4).to_dict(),
         "top_features": importance.head(5).to_dict(orient="records"),
@@ -252,13 +284,14 @@ def run_training(
     class_balance["share"] = (class_balance["rows"] / len(df)).round(4)
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, artifacts_dir / "regime_classifier.joblib")
+    joblib.dump(fitted_model, artifacts_dir / "regime_classifier.joblib")
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
     class_balance.to_csv(artifacts_dir / "class_balance.csv", index=False)
     feature_drift_df.to_csv(artifacts_dir / "feature_drift.csv", index=False)
     confidence_bucket_df.to_csv(artifacts_dir / "confidence_buckets.csv", index=False)
     calibration_df.to_csv(artifacts_dir / "confidence_calibration.csv", index=False)
+    probability_comparison_df.to_csv(artifacts_dir / "probability_comparison.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
 
@@ -270,9 +303,13 @@ def run_training(
         f"- Test rows: {len(test_df)}",
         f"- Bull threshold: {bull_threshold:.4f}",
         f"- Bear threshold: {bear_threshold:.4f}",
+        f"- Probability calibration: {format_calibration_status(calibration_summary['metadata'])}",
         f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
+        f"- Baseline mean confidence: {predictions_df['baseline_confidence'].mean():.4f}",
         f"- Low-confidence share (<0.50): {low_confidence_rate:.4f}",
+        f"- Baseline low-confidence share (<0.50): {baseline_low_confidence_rate:.4f}",
         f"- Top-class Brier score: {top_class_brier:.4f}",
+        f"- Baseline top-class Brier score: {baseline_top_class_brier:.4f}",
         "",
         "## Classification report",
         "```",
@@ -302,6 +339,10 @@ def run_training(
         "```",
         calibration_df.to_string(index=False),
         "```",
+        "## Probability comparison",
+        "```",
+        probability_comparison_df.to_string(index=False),
+        "```",
     ]
     (artifacts_dir / "run_report.md").write_text("\n".join(report_md), encoding="utf-8")
 
@@ -314,6 +355,7 @@ def run_training(
     print(f"- {artifacts_dir / 'feature_drift.csv'}")
     print(f"- {artifacts_dir / 'confidence_buckets.csv'}")
     print(f"- {artifacts_dir / 'confidence_calibration.csv'}")
+    print(f"- {artifacts_dir / 'probability_comparison.csv'}")
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")
@@ -327,6 +369,154 @@ def build_model(model_seed: int) -> RandomForestClassifier:
         random_state=model_seed,
         class_weight="balanced_subsample",
     )
+
+
+def fit_model_with_optional_calibration(
+    train_df: pd.DataFrame,
+    model_seed: int,
+    calibrate_probabilities: bool,
+    calibration_fraction: float,
+    calibration_method: str,
+) -> tuple[object, dict[str, object]]:
+    x_train = train_df[FEATURE_COLS]
+    y_train = train_df["target"]
+    base_model = build_model(model_seed)
+
+    if not calibrate_probabilities:
+        base_model.fit(x_train, y_train)
+        return base_model, {
+            "fit_features": x_train,
+            "importance_model": base_model,
+            "baseline_probabilities": base_model.predict_proba,
+            "metadata": {
+                "enabled": False,
+                "applied": False,
+                "method": calibration_method,
+                "reason": "disabled_by_flag",
+                "fit_rows": len(train_df),
+                "calibration_rows": 0,
+            },
+        }
+
+    calibration_rows = max(60, int(len(train_df) * calibration_fraction))
+    calibration_rows = min(calibration_rows, max(0, len(train_df) - 120))
+    if calibration_rows < 45:
+        base_model.fit(x_train, y_train)
+        return base_model, {
+            "fit_features": x_train,
+            "importance_model": base_model,
+            "baseline_probabilities": base_model.predict_proba,
+            "metadata": {
+                "enabled": True,
+                "applied": False,
+                "method": calibration_method,
+                "reason": "not_enough_rows_for_calibration",
+                "fit_rows": len(train_df),
+                "calibration_rows": calibration_rows,
+            },
+        }
+
+    fit_df = train_df.iloc[:-calibration_rows]
+    calibration_df = train_df.iloc[-calibration_rows:]
+    fit_labels = set(int(value) for value in fit_df["target"].unique())
+    calibration_labels = set(int(value) for value in calibration_df["target"].unique())
+    all_labels = {0, 1, 2}
+    if fit_df.empty or calibration_df.empty or fit_labels != all_labels or calibration_labels != all_labels:
+        base_model.fit(x_train, y_train)
+        return base_model, {
+            "fit_features": x_train,
+            "importance_model": base_model,
+            "baseline_probabilities": base_model.predict_proba,
+            "metadata": {
+                "enabled": True,
+                "applied": False,
+                "method": calibration_method,
+                "reason": "missing_class_in_fit_or_calibration_slice",
+                "fit_rows": len(train_df),
+                "calibration_rows": calibration_rows,
+            },
+        }
+
+    x_fit = fit_df[FEATURE_COLS]
+    y_fit = fit_df["target"]
+    x_calibration = calibration_df[FEATURE_COLS]
+    y_calibration = calibration_df["target"]
+    base_model.fit(x_fit, y_fit)
+    calibrated_model = CalibratedClassifierCV(
+        FrozenEstimator(base_model),
+        method=calibration_method,
+    )
+    calibrated_model.fit(x_calibration, y_calibration)
+    return calibrated_model, {
+        "fit_features": x_fit,
+        "importance_model": base_model,
+        "baseline_probabilities": base_model.predict_proba,
+        "metadata": {
+            "enabled": True,
+            "applied": True,
+            "method": calibration_method,
+            "reason": "applied",
+            "fit_rows": len(fit_df),
+            "calibration_rows": len(calibration_df),
+            "calibration_start_date": calibration_df["date"].iloc[0].date().isoformat(),
+            "calibration_end_date": calibration_df["date"].iloc[-1].date().isoformat(),
+        },
+    }
+
+
+def build_probability_comparison_report(
+    y_test: np.ndarray,
+    baseline_probs: np.ndarray,
+    calibrated_probs: np.ndarray,
+    label_names: dict[int, str],
+) -> pd.DataFrame:
+    rows = []
+    for label_index, label_name in label_names.items():
+        one_vs_rest = (y_test == label_index).astype(int)
+        rows.append(
+            {
+                "label": label_name,
+                "baseline_brier": round(float(brier_score_loss(one_vs_rest, baseline_probs[:, label_index])), 4),
+                "calibrated_brier": round(float(brier_score_loss(one_vs_rest, calibrated_probs[:, label_index])), 4),
+                "brier_delta": round(
+                    float(
+                        brier_score_loss(one_vs_rest, calibrated_probs[:, label_index])
+                        - brier_score_loss(one_vs_rest, baseline_probs[:, label_index])
+                    ),
+                    4,
+                ),
+                "baseline_mean_probability": round(float(baseline_probs[:, label_index].mean()), 4),
+                "calibrated_mean_probability": round(float(calibrated_probs[:, label_index].mean()), 4),
+            }
+        )
+
+    baseline_top_conf = baseline_probs.max(axis=1)
+    calibrated_top_conf = calibrated_probs.max(axis=1)
+    rows.append(
+        {
+            "label": "top_class_confidence",
+            "baseline_brier": round(float(brier_score_loss((baseline_probs.argmax(axis=1) == y_test).astype(int), baseline_top_conf)), 4),
+            "calibrated_brier": round(float(brier_score_loss((calibrated_probs.argmax(axis=1) == y_test).astype(int), calibrated_top_conf)), 4),
+            "brier_delta": round(
+                float(
+                    brier_score_loss((calibrated_probs.argmax(axis=1) == y_test).astype(int), calibrated_top_conf)
+                    - brier_score_loss((baseline_probs.argmax(axis=1) == y_test).astype(int), baseline_top_conf)
+                ),
+                4,
+            ),
+            "baseline_mean_probability": round(float(baseline_top_conf.mean()), 4),
+            "calibrated_mean_probability": round(float(calibrated_top_conf.mean()), 4),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def format_calibration_status(metadata: dict[str, object]) -> str:
+    if metadata["applied"]:
+        return f"enabled ({metadata['method']}, {metadata['calibration_rows']} calibration rows)"
+    if metadata["enabled"]:
+        return f"requested but skipped ({metadata['reason']})"
+    return "disabled"
 
 
 def build_feature_drift_report(train_features: pd.DataFrame, test_features: pd.DataFrame) -> pd.DataFrame:
@@ -601,6 +791,23 @@ def main() -> None:
     parser.add_argument("--threshold-sweep", action="store_true", help="Evaluate multiple symmetric bull/bear label thresholds.")
     parser.add_argument("--feature-ablation", action="store_true", help="Measure holdout accuracy after dropping one engineered feature at a time.")
     parser.add_argument(
+        "--calibrate-probabilities",
+        action="store_true",
+        help="Apply chronological probability calibration on a trailing training slice before evaluating holdout confidence.",
+    )
+    parser.add_argument(
+        "--calibration-fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of the chronological training window reserved for probability calibration.",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=["sigmoid", "isotonic"],
+        default="sigmoid",
+        help="Calibration method used on the trailing training slice.",
+    )
+    parser.add_argument(
         "--threshold-sweep-values",
         default="0.002,0.003,0.004,0.005",
         help="Comma-separated positive threshold values used when --threshold-sweep is enabled.",
@@ -623,6 +830,9 @@ def main() -> None:
         model_seed=args.model_seed,
         bull_threshold=args.bull_threshold,
         bear_threshold=args.bear_threshold,
+        calibrate_probabilities=args.calibrate_probabilities,
+        calibration_fraction=min(max(args.calibration_fraction, 0.05), 0.4),
+        calibration_method=args.calibration_method,
     )
     if not args.skip_walk_forward:
         run_walk_forward(

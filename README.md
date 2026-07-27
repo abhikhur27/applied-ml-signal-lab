@@ -21,6 +21,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - feature importance table
 - confidence bucket table for triaging low-vs-high conviction predictions
 - confidence calibration table for spotting overconfident vs underconfident predictions
+- optional chronological probability calibration, with baseline-vs-calibrated Brier comparisons
 - holdout predictions with target/prediction labels
   - model summary JSON for downstream scripting
   - markdown run report
@@ -52,10 +53,12 @@ Key outputs now include:
 
 - `test_predictions.csv`: holdout rows with actual vs predicted regime labels
 - `test_predictions.csv` now also includes per-class probabilities, confidence, and margin to runner-up
+- `test_predictions.csv` now also includes baseline-vs-calibrated confidence columns for probability audit work
 - `model_summary.json`: compact machine-readable accuracy + feature summary
 - `model_summary.json` now includes confidence posture and prediction mix
 - `confidence_buckets.csv`: row counts and accuracy by confidence band so weak predictions are easier to triage
 - `confidence_calibration.csv`: decile-style confidence calibration table with empirical accuracy and confidence gap
+- `probability_comparison.csv`: per-class Brier comparison between raw forest probabilities and calibrated probabilities
 - `class_balance.csv`: dataset label mix so class skew is visible before you trust the accuracy
 - `feature_drift.csv`: train-vs-test feature shift table so covariate drift is visible before you trust a holdout win
 - `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
@@ -70,6 +73,18 @@ To make synthetic experiments reproducible across runs and tune dataset size:
 
 ```bash
 python -m src.train --use-synthetic --synthetic-seed 7 --synthetic-points 3000 --model-seed 42
+```
+
+If you want probability calibration on top of the raw forest output, enable it on the trailing slice of the chronological training window:
+
+```bash
+python -m src.train --use-synthetic --calibrate-probabilities
+```
+
+You can also swap calibration method when you have enough rows for a less parametric fit:
+
+```bash
+python -m src.train --use-synthetic --calibrate-probabilities --calibration-method isotonic
 ```
 
 To compare multiple symmetric bull/bear label thresholds before settling on one:
@@ -131,6 +146,7 @@ Use this sequence before publishing a run artifact:
 
 - `model_summary.json`: quickest machine-readable snapshot of accuracy, class mix, and confidence posture
 - `test_predictions.csv`: holdout prediction ledger for false-positive / false-negative review
+- `probability_comparison.csv`: whether calibration improved per-class Brier score or merely shifted confidence
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
 - `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
 - `report.md`: human-facing summary worth linking in notes or portfolio discussion
