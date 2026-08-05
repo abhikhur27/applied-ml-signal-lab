@@ -114,6 +114,46 @@ def validate_price_series(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned.sort_values("date").reset_index(drop=True)
 
 
+def build_baseline_predictions(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    majority_label = int(train_df["target"].mode().iloc[0])
+    majority_preds = np.full(len(test_df), majority_label, dtype=int)
+
+    last_known_targets = pd.concat(
+        [
+            train_df["target"].iloc[[-1]],
+            test_df["target"].iloc[:-1],
+        ],
+        ignore_index=True,
+    )
+    persistence_preds = last_known_targets.to_numpy(dtype=int)
+    return majority_preds, persistence_preds
+
+
+def build_benchmark_summary(y_true: pd.Series, rf_preds: np.ndarray, majority_preds: np.ndarray, persistence_preds: np.ndarray) -> pd.DataFrame:
+    y_array = y_true.to_numpy()
+    rows = []
+    benchmark_map = {
+        "random_forest": rf_preds,
+        "persistence": persistence_preds,
+        "majority_class": majority_preds,
+    }
+    for name, preds in benchmark_map.items():
+        rows.append(
+            {
+                "model": name,
+                "accuracy": round(float(accuracy_score(y_array, preds)), 4),
+                "bull_share": round(float((preds == 2).mean()), 4),
+                "neutral_share": round(float((preds == 1).mean()), 4),
+                "bear_share": round(float((preds == 0).mean()), 4),
+            }
+        )
+
+    benchmark_df = pd.DataFrame(rows)
+    rf_accuracy = float(benchmark_df.loc[benchmark_df["model"] == "random_forest", "accuracy"].iloc[0])
+    benchmark_df["accuracy_delta_vs_random_forest"] = benchmark_df["accuracy"].apply(lambda value: round(float(value - rf_accuracy), 4))
+    return benchmark_df
+
+
 def run_training(
     df: pd.DataFrame,
     artifacts_dir: Path,
@@ -144,6 +184,13 @@ def run_training(
     baseline_probs = calibration_summary["baseline_probabilities"](x_test)
     probs = fitted_model.predict_proba(x_test)
     preds = fitted_model.predict(x_test)
+    majority_preds, persistence_preds = build_baseline_predictions(train_df, test_df)
+    benchmark_df = build_benchmark_summary(
+        y_true=y_test,
+        rf_preds=preds,
+        majority_preds=majority_preds,
+        persistence_preds=persistence_preds,
+    )
 
     label_names = {0: "bear", 1: "neutral", 2: "bull"}
     report = classification_report(
@@ -168,6 +215,10 @@ def run_training(
     predictions_df["prediction"] = preds
     predictions_df["target_label"] = predictions_df["target"].map(label_names)
     predictions_df["prediction_label"] = predictions_df["prediction"].map(label_names)
+    predictions_df["majority_prediction"] = majority_preds
+    predictions_df["majority_prediction_label"] = pd.Series(majority_preds).map(label_names)
+    predictions_df["persistence_prediction"] = persistence_preds
+    predictions_df["persistence_prediction_label"] = pd.Series(persistence_preds).map(label_names)
     predictions_df["baseline_prob_bear"] = baseline_probs[:, 0]
     predictions_df["baseline_prob_neutral"] = baseline_probs[:, 1]
     predictions_df["baseline_prob_bull"] = baseline_probs[:, 2]
@@ -258,6 +309,7 @@ def run_training(
         "bear_threshold": bear_threshold,
         "probability_calibration": calibration_summary["metadata"],
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
+        "benchmark_accuracy": benchmark_df.to_dict(orient="records"),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
         "baseline_mean_confidence": round(float(predictions_df["baseline_confidence"].mean()), 4),
         "low_confidence_rate": low_confidence_rate,
@@ -291,6 +343,7 @@ def run_training(
     feature_drift_df.to_csv(artifacts_dir / "feature_drift.csv", index=False)
     confidence_bucket_df.to_csv(artifacts_dir / "confidence_buckets.csv", index=False)
     calibration_df.to_csv(artifacts_dir / "confidence_calibration.csv", index=False)
+    benchmark_df.to_csv(artifacts_dir / "benchmark_accuracy.csv", index=False)
     probability_comparison_df.to_csv(artifacts_dir / "probability_comparison.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
@@ -304,6 +357,8 @@ def run_training(
         f"- Bull threshold: {bull_threshold:.4f}",
         f"- Bear threshold: {bear_threshold:.4f}",
         f"- Probability calibration: {format_calibration_status(calibration_summary['metadata'])}",
+        f"- Persistence benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'persistence', 'accuracy'].iloc[0]:.4f}",
+        f"- Majority-class benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'majority_class', 'accuracy'].iloc[0]:.4f}",
         f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
         f"- Baseline mean confidence: {predictions_df['baseline_confidence'].mean():.4f}",
         f"- Low-confidence share (<0.50): {low_confidence_rate:.4f}",
@@ -318,6 +373,10 @@ def run_training(
         "## Confidence summary",
         "```",
         predictions_df.groupby("prediction_label")[["confidence", "margin_to_runner_up"]].mean().round(4).to_string(),
+        "```",
+        "## Benchmark comparison",
+        "```",
+        benchmark_df.to_string(index=False),
         "```",
         "## Top feature importance",
         "```",
@@ -355,6 +414,7 @@ def run_training(
     print(f"- {artifacts_dir / 'feature_drift.csv'}")
     print(f"- {artifacts_dir / 'confidence_buckets.csv'}")
     print(f"- {artifacts_dir / 'confidence_calibration.csv'}")
+    print(f"- {artifacts_dir / 'benchmark_accuracy.csv'}")
     print(f"- {artifacts_dir / 'probability_comparison.csv'}")
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
@@ -718,6 +778,10 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         model = build_model(model_seed)
         model.fit(train_df[FEATURE_COLS], train_df["target"])
         preds = model.predict(test_df[FEATURE_COLS])
+        majority_preds, persistence_preds = build_baseline_predictions(train_df, test_df)
+        rf_accuracy = float(accuracy_score(test_df["target"], preds))
+        majority_accuracy = float(accuracy_score(test_df["target"], majority_preds))
+        persistence_accuracy = float(accuracy_score(test_df["target"], persistence_preds))
 
         rows.append(
             {
@@ -726,7 +790,11 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
                 "test_rows": len(test_df),
                 "start_date": test_df["date"].iloc[0].date().isoformat(),
                 "end_date": test_df["date"].iloc[-1].date().isoformat(),
-                "accuracy": round(accuracy_score(test_df["target"], preds), 4),
+                "accuracy": round(rf_accuracy, 4),
+                "persistence_accuracy": round(persistence_accuracy, 4),
+                "majority_accuracy": round(majority_accuracy, 4),
+                "accuracy_vs_persistence": round(rf_accuracy - persistence_accuracy, 4),
+                "accuracy_vs_majority": round(rf_accuracy - majority_accuracy, 4),
                 "bull_share": round(float((preds == 2).mean()), 4),
                 "bear_share": round(float((preds == 0).mean()), 4),
             }
@@ -749,6 +817,12 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         "mean_accuracy": round(float(walk_forward_df["accuracy"].mean()), 4),
         "best_window_accuracy": round(float(walk_forward_df["accuracy"].max()), 4),
         "worst_window_accuracy": round(float(walk_forward_df["accuracy"].min()), 4),
+        "mean_persistence_accuracy": round(float(walk_forward_df["persistence_accuracy"].mean()), 4),
+        "mean_majority_accuracy": round(float(walk_forward_df["majority_accuracy"].mean()), 4),
+        "mean_accuracy_vs_persistence": round(float(walk_forward_df["accuracy_vs_persistence"].mean()), 4),
+        "mean_accuracy_vs_majority": round(float(walk_forward_df["accuracy_vs_majority"].mean()), 4),
+        "windows_beating_persistence": int((walk_forward_df["accuracy"] > walk_forward_df["persistence_accuracy"]).sum()),
+        "windows_beating_majority": int((walk_forward_df["accuracy"] > walk_forward_df["majority_accuracy"]).sum()),
         "mean_bull_share": round(float(walk_forward_df["bull_share"].mean()), 4),
         "mean_bear_share": round(float(walk_forward_df["bear_share"].mean()), 4),
     }
@@ -761,6 +835,10 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         f"- Mean accuracy: {walk_forward_df['accuracy'].mean():.4f}",
         f"- Best window accuracy: {walk_forward_df['accuracy'].max():.4f}",
         f"- Worst window accuracy: {walk_forward_df['accuracy'].min():.4f}",
+        f"- Mean persistence accuracy: {walk_forward_df['persistence_accuracy'].mean():.4f}",
+        f"- Mean majority accuracy: {walk_forward_df['majority_accuracy'].mean():.4f}",
+        f"- Windows beating persistence: {(walk_forward_df['accuracy'] > walk_forward_df['persistence_accuracy']).sum()} / {len(walk_forward_df)}",
+        f"- Windows beating majority: {(walk_forward_df['accuracy'] > walk_forward_df['majority_accuracy']).sum()} / {len(walk_forward_df)}",
         "",
         "## Window metrics",
         "```",
