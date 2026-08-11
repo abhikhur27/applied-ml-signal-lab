@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
@@ -22,6 +23,35 @@ FEATURE_COLS = [
     "vol_20",
     "ma_spread",
     "rsi_14",
+]
+
+DEFAULT_MODEL_CONFIG = {
+    "name": "rf_balanced_depth8_leaf6_estimators350",
+    "n_estimators": 350,
+    "min_samples_leaf": 6,
+    "max_depth": 8,
+}
+
+MODEL_SEARCH_CANDIDATES = [
+    DEFAULT_MODEL_CONFIG,
+    {
+        "name": "rf_balanced_depth6_leaf8_estimators250",
+        "n_estimators": 250,
+        "min_samples_leaf": 8,
+        "max_depth": 6,
+    },
+    {
+        "name": "rf_balanced_depth10_leaf4_estimators450",
+        "n_estimators": 450,
+        "min_samples_leaf": 4,
+        "max_depth": 10,
+    },
+    {
+        "name": "rf_balanced_depth12_leaf3_estimators550",
+        "n_estimators": 550,
+        "min_samples_leaf": 3,
+        "max_depth": 12,
+    },
 ]
 
 
@@ -154,6 +184,102 @@ def build_benchmark_summary(y_true: pd.Series, rf_preds: np.ndarray, majority_pr
     return benchmark_df
 
 
+def select_model_config(
+    train_df: pd.DataFrame,
+    model_seed: int,
+    enable_model_search: bool,
+) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
+    if not enable_model_search:
+        return DEFAULT_MODEL_CONFIG, pd.DataFrame(), {
+            "enabled": False,
+            "applied": False,
+            "selected_config": DEFAULT_MODEL_CONFIG["name"],
+            "reason": "disabled_by_flag",
+            "validation_rows": 0,
+            "search_rows": len(train_df),
+        }
+
+    validation_rows = max(90, int(len(train_df) * 0.2))
+    validation_rows = min(validation_rows, max(0, len(train_df) - 160))
+    if validation_rows < 60:
+        return DEFAULT_MODEL_CONFIG, pd.DataFrame(), {
+            "enabled": True,
+            "applied": False,
+            "selected_config": DEFAULT_MODEL_CONFIG["name"],
+            "reason": "not_enough_rows_for_validation_slice",
+            "validation_rows": validation_rows,
+            "search_rows": len(train_df),
+        }
+
+    fit_df = train_df.iloc[:-validation_rows]
+    validation_df = train_df.iloc[-validation_rows:]
+    all_labels = {0, 1, 2}
+    fit_labels = set(int(value) for value in fit_df["target"].unique())
+    validation_labels = set(int(value) for value in validation_df["target"].unique())
+    if fit_df.empty or validation_df.empty or fit_labels != all_labels or validation_labels != all_labels:
+        return DEFAULT_MODEL_CONFIG, pd.DataFrame(), {
+            "enabled": True,
+            "applied": False,
+            "selected_config": DEFAULT_MODEL_CONFIG["name"],
+            "reason": "missing_class_in_validation_slice",
+            "validation_rows": validation_rows,
+            "search_rows": len(train_df),
+        }
+
+    x_fit = fit_df[FEATURE_COLS]
+    y_fit = fit_df["target"]
+    x_validation = validation_df[FEATURE_COLS]
+    y_validation = validation_df["target"]
+    majority_preds, persistence_preds = build_baseline_predictions(fit_df, validation_df)
+    majority_accuracy = float(accuracy_score(y_validation, majority_preds))
+    persistence_accuracy = float(accuracy_score(y_validation, persistence_preds))
+
+    rows = []
+    for candidate in MODEL_SEARCH_CANDIDATES:
+        model = build_model(model_seed, candidate)
+        model.fit(x_fit, y_fit)
+        probs = model.predict_proba(x_validation)
+        preds = model.predict(x_validation)
+        accuracy = float(accuracy_score(y_validation, preds))
+        rows.append(
+            {
+                "config_name": candidate["name"],
+                "n_estimators": candidate["n_estimators"],
+                "max_depth": candidate["max_depth"],
+                "min_samples_leaf": candidate["min_samples_leaf"],
+                "validation_accuracy": round(accuracy, 4),
+                "accuracy_vs_persistence": round(accuracy - persistence_accuracy, 4),
+                "accuracy_vs_majority": round(accuracy - majority_accuracy, 4),
+                "mean_confidence": round(float(probs.max(axis=1).mean()), 4),
+                "low_confidence_rate": round(float((probs.max(axis=1) < 0.5).mean()), 4),
+                "bull_share": round(float((preds == 2).mean()), 4),
+                "neutral_share": round(float((preds == 1).mean()), 4),
+                "bear_share": round(float((preds == 0).mean()), 4),
+            }
+        )
+
+    search_df = pd.DataFrame(rows).sort_values(
+        ["validation_accuracy", "accuracy_vs_persistence", "mean_confidence"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+    selected_name = str(search_df.iloc[0]["config_name"])
+    selected_config = next(candidate for candidate in MODEL_SEARCH_CANDIDATES if candidate["name"] == selected_name)
+    return selected_config, search_df, {
+        "enabled": True,
+        "applied": True,
+        "selected_config": selected_name,
+        "reason": "best_validation_accuracy",
+        "validation_rows": len(validation_df),
+        "search_rows": len(fit_df),
+        "validation_start_date": validation_df["date"].iloc[0].date().isoformat(),
+        "validation_end_date": validation_df["date"].iloc[-1].date().isoformat(),
+        "validation_baselines": {
+            "persistence_accuracy": round(persistence_accuracy, 4),
+            "majority_accuracy": round(majority_accuracy, 4),
+        },
+    }
+
+
 def run_training(
     df: pd.DataFrame,
     artifacts_dir: Path,
@@ -163,6 +289,7 @@ def run_training(
     calibrate_probabilities: bool,
     calibration_fraction: float,
     calibration_method: str,
+    model_search: bool,
 ) -> None:
     split = int(len(df) * 0.8)
     train_df = df.iloc[:split]
@@ -170,12 +297,18 @@ def run_training(
 
     x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
+    selected_config, model_search_df, model_search_summary = select_model_config(
+        train_df=train_df,
+        model_seed=model_seed,
+        enable_model_search=model_search,
+    )
     fitted_model, calibration_summary = fit_model_with_optional_calibration(
         train_df=train_df,
         model_seed=model_seed,
         calibrate_probabilities=calibrate_probabilities,
         calibration_fraction=calibration_fraction,
         calibration_method=calibration_method,
+        model_config=selected_config,
     )
     feature_drift_df = build_feature_drift_report(
         calibration_summary["fit_features"],
@@ -308,6 +441,7 @@ def run_training(
         "bull_threshold": bull_threshold,
         "bear_threshold": bear_threshold,
         "probability_calibration": calibration_summary["metadata"],
+        "model_selection": model_search_summary,
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
         "benchmark_accuracy": benchmark_df.to_dict(orient="records"),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
@@ -347,6 +481,32 @@ def run_training(
     probability_comparison_df.to_csv(artifacts_dir / "probability_comparison.csv", index=False)
     predictions_df.to_csv(artifacts_dir / "test_predictions.csv", index=False)
     (artifacts_dir / "model_summary.json").write_text(json.dumps(model_summary, indent=2), encoding="utf-8")
+    if model_search_summary["enabled"]:
+        if model_search_df.empty:
+            search_lines = [
+                "# Model Search",
+                "",
+                f"- Status: requested but skipped ({model_search_summary['reason']})",
+                f"- Selected config fallback: {model_search_summary['selected_config']}",
+            ]
+        else:
+            model_search_df.to_csv(artifacts_dir / "model_search.csv", index=False)
+            search_lines = [
+                "# Model Search",
+                "",
+                f"- Selected config: {model_search_summary['selected_config']}",
+                f"- Search rows: {model_search_summary['search_rows']}",
+                f"- Validation rows: {model_search_summary['validation_rows']}",
+                f"- Validation date range: {model_search_summary['validation_start_date']} to {model_search_summary['validation_end_date']}",
+                f"- Validation persistence accuracy: {model_search_summary['validation_baselines']['persistence_accuracy']:.4f}",
+                f"- Validation majority accuracy: {model_search_summary['validation_baselines']['majority_accuracy']:.4f}",
+                "",
+                "## Candidate comparison",
+                "```",
+                model_search_df.to_string(index=False),
+                "```",
+            ]
+        (artifacts_dir / "model_search_report.md").write_text("\n".join(search_lines), encoding="utf-8")
 
     report_md = [
         "# Training Run Report",
@@ -356,6 +516,8 @@ def run_training(
         f"- Test rows: {len(test_df)}",
         f"- Bull threshold: {bull_threshold:.4f}",
         f"- Bear threshold: {bear_threshold:.4f}",
+        f"- Selected model config: {model_search_summary['selected_config']}",
+        f"- Model search: {format_model_search_status(model_search_summary)}",
         f"- Probability calibration: {format_calibration_status(calibration_summary['metadata'])}",
         f"- Persistence benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'persistence', 'accuracy'].iloc[0]:.4f}",
         f"- Majority-class benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'majority_class', 'accuracy'].iloc[0]:.4f}",
@@ -419,13 +581,18 @@ def run_training(
     print(f"- {artifacts_dir / 'test_predictions.csv'}")
     print(f"- {artifacts_dir / 'model_summary.json'}")
     print(f"- {artifacts_dir / 'run_report.md'}")
+    if model_search_summary["enabled"]:
+        if not model_search_df.empty:
+            print(f"- {artifacts_dir / 'model_search.csv'}")
+        print(f"- {artifacts_dir / 'model_search_report.md'}")
 
 
-def build_model(model_seed: int) -> RandomForestClassifier:
+def build_model(model_seed: int, config: dict[str, Any] | None = None) -> RandomForestClassifier:
+    resolved = DEFAULT_MODEL_CONFIG if config is None else config
     return RandomForestClassifier(
-        n_estimators=350,
-        min_samples_leaf=6,
-        max_depth=8,
+        n_estimators=int(resolved["n_estimators"]),
+        min_samples_leaf=int(resolved["min_samples_leaf"]),
+        max_depth=int(resolved["max_depth"]),
         random_state=model_seed,
         class_weight="balanced_subsample",
     )
@@ -437,10 +604,10 @@ def fit_model_with_optional_calibration(
     calibrate_probabilities: bool,
     calibration_fraction: float,
     calibration_method: str,
+    model_config: dict[str, Any],
 ) -> tuple[object, dict[str, object]]:
     x_train = train_df[FEATURE_COLS]
-    y_train = train_df["target"]
-    base_model = build_model(model_seed)
+    base_model = build_model(model_seed, model_config)
 
     if not calibrate_probabilities:
         base_model.fit(x_train, y_train)
@@ -455,6 +622,7 @@ def fit_model_with_optional_calibration(
                 "reason": "disabled_by_flag",
                 "fit_rows": len(train_df),
                 "calibration_rows": 0,
+                "model_config": model_config["name"],
             },
         }
 
@@ -473,6 +641,7 @@ def fit_model_with_optional_calibration(
                 "reason": "not_enough_rows_for_calibration",
                 "fit_rows": len(train_df),
                 "calibration_rows": calibration_rows,
+                "model_config": model_config["name"],
             },
         }
 
@@ -494,6 +663,7 @@ def fit_model_with_optional_calibration(
                 "reason": "missing_class_in_fit_or_calibration_slice",
                 "fit_rows": len(train_df),
                 "calibration_rows": calibration_rows,
+                "model_config": model_config["name"],
             },
         }
 
@@ -518,6 +688,7 @@ def fit_model_with_optional_calibration(
             "reason": "applied",
             "fit_rows": len(fit_df),
             "calibration_rows": len(calibration_df),
+            "model_config": model_config["name"],
             "calibration_start_date": calibration_df["date"].iloc[0].date().isoformat(),
             "calibration_end_date": calibration_df["date"].iloc[-1].date().isoformat(),
         },
@@ -574,6 +745,14 @@ def build_probability_comparison_report(
 def format_calibration_status(metadata: dict[str, object]) -> str:
     if metadata["applied"]:
         return f"enabled ({metadata['method']}, {metadata['calibration_rows']} calibration rows)"
+    if metadata["enabled"]:
+        return f"requested but skipped ({metadata['reason']})"
+    return "disabled"
+
+
+def format_model_search_status(metadata: dict[str, Any]) -> str:
+    if metadata["applied"]:
+        return f"enabled ({metadata['validation_rows']} validation rows)"
     if metadata["enabled"]:
         return f"requested but skipped ({metadata['reason']})"
     return "disabled"
@@ -890,6 +1069,11 @@ def main() -> None:
         default="0.002,0.003,0.004,0.005",
         help="Comma-separated positive threshold values used when --threshold-sweep is enabled.",
     )
+    parser.add_argument(
+        "--model-search",
+        action="store_true",
+        help="Score multiple random-forest configurations on a chronological validation slice before the final fit.",
+    )
     args = parser.parse_args()
 
     if not args.use_synthetic and args.csv is None:
@@ -911,6 +1095,7 @@ def main() -> None:
         calibrate_probabilities=args.calibrate_probabilities,
         calibration_fraction=min(max(args.calibration_fraction, 0.05), 0.4),
         calibration_method=args.calibration_method,
+        model_search=args.model_search,
     )
     if not args.skip_walk_forward:
         run_walk_forward(

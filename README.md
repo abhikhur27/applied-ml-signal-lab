@@ -29,6 +29,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
 - walk-forward metrics + markdown summary by default
 - optional threshold-sweep CSV + markdown report for label-cutoff tuning
 - optional feature-ablation CSV + markdown report for drop-one-feature sensitivity
+- optional chronological model-search CSV + markdown report for random-forest config selection
 - serialized model (`joblib`)
 
 ## Why this is useful
@@ -106,6 +107,14 @@ python -m src.train --use-synthetic --feature-ablation
 
 That writes `feature_ablation.csv` and `feature_ablation_report.md` beside the normal training artifacts.
 
+To justify the random-forest choice instead of relying on one fixed config, run a chronological search across several maintained candidates:
+
+```bash
+python -m src.train --use-synthetic --model-search
+```
+
+That writes `model_search.csv` and `model_search_report.md`, then carries the selected configuration into the final holdout evaluation and optional probability calibration.
+
 ## Use your own data
 
 Input CSV should include:
@@ -154,6 +163,7 @@ Use this sequence before publishing a run artifact:
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
 - `walk_forward_summary.json`: includes how often the model beat persistence and majority baselines across windows
 - `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
+- `model_search.csv`: chronological validation scoreboard for maintained forest candidates before the final fit
 - `report.md`: human-facing summary worth linking in notes or portfolio discussion
 
 ## Label Tuning
