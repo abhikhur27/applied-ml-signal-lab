@@ -83,13 +83,20 @@ def generate_synthetic_prices(points: int = 2200, seed: int = 7) -> pd.DataFrame
     return pd.DataFrame({"date": dates, "close": prices})
 
 
-def build_features(data: pd.DataFrame, bull_threshold: float = 0.003, bear_threshold: float = -0.003) -> pd.DataFrame:
+def build_features(
+    data: pd.DataFrame,
+    bull_threshold: float = 0.003,
+    bear_threshold: float = -0.003,
+    label_horizon: int = 1,
+) -> pd.DataFrame:
     if bull_threshold <= 0:
         raise ValueError("bull_threshold must be positive.")
     if bear_threshold >= 0:
         raise ValueError("bear_threshold must be negative.")
     if bull_threshold <= abs(bear_threshold) / 10:
         raise ValueError("bull_threshold is unrealistically tight relative to the bear threshold.")
+    if label_horizon < 1:
+        raise ValueError("label_horizon must be at least 1.")
 
     df = data.copy()
     df = df.sort_values("date").reset_index(drop=True)
@@ -108,13 +115,15 @@ def build_features(data: pd.DataFrame, bull_threshold: float = 0.003, bear_thres
     rs = up / down
     df["rsi_14"] = 100 - (100 / (1 + rs))
 
-    future_ret = df["close"].shift(-1) / df["close"] - 1
+    df["label_end_date"] = df["date"].shift(-label_horizon)
+    df["forward_return"] = df["close"].shift(-label_horizon) / df["close"] - 1
+    df = df.dropna(subset=FEATURE_COLS + ["label_end_date", "forward_return"]).copy()
     df["target"] = np.select(
-        [future_ret > bull_threshold, future_ret < bear_threshold],
+        [df["forward_return"] > bull_threshold, df["forward_return"] < bear_threshold],
         [2, 0],
         default=1,
     )
-    return df.dropna().reset_index(drop=True)
+    return df.reset_index(drop=True)
 
 
 def load_csv(path: Path) -> pd.DataFrame:
@@ -144,18 +153,46 @@ def validate_price_series(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned.sort_values("date").reset_index(drop=True)
 
 
-def build_baseline_predictions(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def chronological_holdout(
+    df: pd.DataFrame,
+    label_horizon: int,
+    test_fraction: float = 0.2,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    if label_horizon < 1:
+        raise ValueError("label_horizon must be at least 1.")
+    if not 0 < test_fraction < 1:
+        raise ValueError("test_fraction must be between 0 and 1.")
+    split = int(len(df) * (1 - test_fraction))
+    train_end = split - label_horizon
+    if train_end < 1 or split >= len(df):
+        raise ValueError("Dataset is too small for the requested chronological holdout and label horizon.")
+
+    train_df = df.iloc[:train_end].copy()
+    test_df = df.iloc[split:].copy()
+    observable_target_history = df.iloc[:split]["target"].copy()
+    return train_df, test_df, observable_target_history
+
+
+def build_baseline_predictions(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    label_horizon: int = 1,
+    observable_target_history: pd.Series | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     majority_label = int(train_df["target"].mode().iloc[0])
     majority_preds = np.full(len(test_df), majority_label, dtype=int)
 
-    last_known_targets = pd.concat(
+    history = train_df["target"] if observable_target_history is None else observable_target_history
+    if len(history) < label_horizon:
+        raise ValueError("Not enough observable target history for the persistence baseline.")
+    lagged_targets = pd.concat(
         [
-            train_df["target"].iloc[[-1]],
-            test_df["target"].iloc[:-1],
+            history.iloc[-label_horizon:],
+            test_df["target"].iloc[:-label_horizon],
         ],
         ignore_index=True,
     )
-    persistence_preds = last_known_targets.to_numpy(dtype=int)
+    persistence_preds = lagged_targets.to_numpy(dtype=int)
     return majority_preds, persistence_preds
 
 
@@ -188,6 +225,7 @@ def select_model_config(
     train_df: pd.DataFrame,
     model_seed: int,
     enable_model_search: bool,
+    label_horizon: int = 1,
 ) -> tuple[dict[str, Any], pd.DataFrame, dict[str, Any]]:
     if not enable_model_search:
         return DEFAULT_MODEL_CONFIG, pd.DataFrame(), {
@@ -200,7 +238,7 @@ def select_model_config(
         }
 
     validation_rows = max(90, int(len(train_df) * 0.2))
-    validation_rows = min(validation_rows, max(0, len(train_df) - 160))
+    validation_rows = min(validation_rows, max(0, len(train_df) - 160 - label_horizon))
     if validation_rows < 60:
         return DEFAULT_MODEL_CONFIG, pd.DataFrame(), {
             "enabled": True,
@@ -211,7 +249,8 @@ def select_model_config(
             "search_rows": len(train_df),
         }
 
-    fit_df = train_df.iloc[:-validation_rows]
+    fit_end = len(train_df) - validation_rows - label_horizon
+    fit_df = train_df.iloc[:fit_end]
     validation_df = train_df.iloc[-validation_rows:]
     all_labels = {0, 1, 2}
     fit_labels = set(int(value) for value in fit_df["target"].unique())
@@ -230,7 +269,12 @@ def select_model_config(
     y_fit = fit_df["target"]
     x_validation = validation_df[FEATURE_COLS]
     y_validation = validation_df["target"]
-    majority_preds, persistence_preds = build_baseline_predictions(fit_df, validation_df)
+    majority_preds, persistence_preds = build_baseline_predictions(
+        fit_df,
+        validation_df,
+        label_horizon=label_horizon,
+        observable_target_history=train_df.iloc[:-validation_rows]["target"],
+    )
     majority_accuracy = float(accuracy_score(y_validation, majority_preds))
     persistence_accuracy = float(accuracy_score(y_validation, persistence_preds))
 
@@ -250,6 +294,7 @@ def select_model_config(
                 "validation_accuracy": round(accuracy, 4),
                 "accuracy_vs_persistence": round(accuracy - persistence_accuracy, 4),
                 "accuracy_vs_majority": round(accuracy - majority_accuracy, 4),
+                "eligible_for_selection": accuracy > persistence_accuracy and accuracy > majority_accuracy,
                 "mean_confidence": round(float(probs.max(axis=1).mean()), 4),
                 "low_confidence_rate": round(float((probs.max(axis=1) < 0.5).mean()), 4),
                 "bull_share": round(float((preds == 2).mean()), 4),
@@ -259,18 +304,21 @@ def select_model_config(
         )
 
     search_df = pd.DataFrame(rows).sort_values(
-        ["validation_accuracy", "accuracy_vs_persistence", "mean_confidence"],
-        ascending=[False, False, False],
+        ["eligible_for_selection", "validation_accuracy", "accuracy_vs_persistence", "mean_confidence"],
+        ascending=[False, False, False, False],
     ).reset_index(drop=True)
-    selected_name = str(search_df.iloc[0]["config_name"])
+    top_candidate = search_df.iloc[0]
+    selection_applied = bool(top_candidate["eligible_for_selection"])
+    selected_name = str(top_candidate["config_name"]) if selection_applied else str(DEFAULT_MODEL_CONFIG["name"])
     selected_config = next(candidate for candidate in MODEL_SEARCH_CANDIDATES if candidate["name"] == selected_name)
     return selected_config, search_df, {
         "enabled": True,
-        "applied": True,
+        "applied": selection_applied,
         "selected_config": selected_name,
-        "reason": "best_validation_accuracy",
+        "reason": "best_baseline_beating_validation_accuracy" if selection_applied else "no_candidate_beat_both_baselines",
         "validation_rows": len(validation_df),
         "search_rows": len(fit_df),
+        "purged_rows": label_horizon,
         "validation_start_date": validation_df["date"].iloc[0].date().isoformat(),
         "validation_end_date": validation_df["date"].iloc[-1].date().isoformat(),
         "validation_baselines": {
@@ -286,14 +334,16 @@ def run_training(
     model_seed: int,
     bull_threshold: float,
     bear_threshold: float,
+    label_horizon: int,
     calibrate_probabilities: bool,
     calibration_fraction: float,
     calibration_method: str,
     model_search: bool,
 ) -> None:
-    split = int(len(df) * 0.8)
-    train_df = df.iloc[:split]
-    test_df = df.iloc[split:]
+    train_df, test_df, observable_target_history = chronological_holdout(
+        df,
+        label_horizon=label_horizon,
+    )
 
     x_test = test_df[FEATURE_COLS]
     y_test = test_df["target"]
@@ -301,6 +351,7 @@ def run_training(
         train_df=train_df,
         model_seed=model_seed,
         enable_model_search=model_search,
+        label_horizon=label_horizon,
     )
     fitted_model, calibration_summary = fit_model_with_optional_calibration(
         train_df=train_df,
@@ -309,6 +360,7 @@ def run_training(
         calibration_fraction=calibration_fraction,
         calibration_method=calibration_method,
         model_config=selected_config,
+        label_horizon=label_horizon,
     )
     feature_drift_df = build_feature_drift_report(
         calibration_summary["fit_features"],
@@ -317,7 +369,12 @@ def run_training(
     baseline_probs = calibration_summary["baseline_probabilities"](x_test)
     probs = fitted_model.predict_proba(x_test)
     preds = fitted_model.predict(x_test)
-    majority_preds, persistence_preds = build_baseline_predictions(train_df, test_df)
+    majority_preds, persistence_preds = build_baseline_predictions(
+        train_df,
+        test_df,
+        label_horizon=label_horizon,
+        observable_target_history=observable_target_history,
+    )
     benchmark_df = build_benchmark_summary(
         y_true=y_test,
         rf_preds=preds,
@@ -344,7 +401,7 @@ def run_training(
         .sort_values("importance", ascending=False)
         .reset_index(drop=True)
     )
-    predictions_df = test_df[["date", "close", "target"]].copy()
+    predictions_df = test_df[["date", "label_end_date", "close", "forward_return", "target"]].copy()
     predictions_df["prediction"] = preds
     predictions_df["target_label"] = predictions_df["target"].map(label_names)
     predictions_df["prediction_label"] = predictions_df["prediction"].map(label_names)
@@ -438,6 +495,8 @@ def run_training(
         "samples": len(df),
         "train_rows": len(train_df),
         "test_rows": len(test_df),
+        "label_horizon": label_horizon,
+        "purged_holdout_rows": label_horizon,
         "bull_threshold": bull_threshold,
         "bear_threshold": bear_threshold,
         "probability_calibration": calibration_summary["metadata"],
@@ -495,6 +554,7 @@ def run_training(
                 "# Model Search",
                 "",
                 f"- Selected config: {model_search_summary['selected_config']}",
+                f"- Decision: {model_search_summary['reason']}",
                 f"- Search rows: {model_search_summary['search_rows']}",
                 f"- Validation rows: {model_search_summary['validation_rows']}",
                 f"- Validation date range: {model_search_summary['validation_start_date']} to {model_search_summary['validation_end_date']}",
@@ -514,6 +574,8 @@ def run_training(
         f"- Samples: {len(df)}",
         f"- Train rows: {len(train_df)}",
         f"- Test rows: {len(test_df)}",
+        f"- Label horizon: {label_horizon} trading row(s)",
+        f"- Purged rows before holdout: {label_horizon}",
         f"- Bull threshold: {bull_threshold:.4f}",
         f"- Bear threshold: {bear_threshold:.4f}",
         f"- Selected model config: {model_search_summary['selected_config']}",
@@ -605,8 +667,10 @@ def fit_model_with_optional_calibration(
     calibration_fraction: float,
     calibration_method: str,
     model_config: dict[str, Any],
+    label_horizon: int = 1,
 ) -> tuple[object, dict[str, object]]:
     x_train = train_df[FEATURE_COLS]
+    y_train = train_df["target"]
     base_model = build_model(model_seed, model_config)
 
     if not calibrate_probabilities:
@@ -627,7 +691,7 @@ def fit_model_with_optional_calibration(
         }
 
     calibration_rows = max(60, int(len(train_df) * calibration_fraction))
-    calibration_rows = min(calibration_rows, max(0, len(train_df) - 120))
+    calibration_rows = min(calibration_rows, max(0, len(train_df) - 120 - label_horizon))
     if calibration_rows < 45:
         base_model.fit(x_train, y_train)
         return base_model, {
@@ -645,7 +709,8 @@ def fit_model_with_optional_calibration(
             },
         }
 
-    fit_df = train_df.iloc[:-calibration_rows]
+    fit_end = len(train_df) - calibration_rows - label_horizon
+    fit_df = train_df.iloc[:fit_end]
     calibration_df = train_df.iloc[-calibration_rows:]
     fit_labels = set(int(value) for value in fit_df["target"].unique())
     calibration_labels = set(int(value) for value in calibration_df["target"].unique())
@@ -688,6 +753,7 @@ def fit_model_with_optional_calibration(
             "reason": "applied",
             "fit_rows": len(fit_df),
             "calibration_rows": len(calibration_df),
+            "purged_rows": label_horizon,
             "model_config": model_config["name"],
             "calibration_start_date": calibration_df["date"].iloc[0].date().isoformat(),
             "calibration_end_date": calibration_df["date"].iloc[-1].date().isoformat(),
@@ -753,6 +819,8 @@ def format_calibration_status(metadata: dict[str, object]) -> str:
 def format_model_search_status(metadata: dict[str, Any]) -> str:
     if metadata["applied"]:
         return f"enabled ({metadata['validation_rows']} validation rows)"
+    if metadata["reason"] == "no_candidate_beat_both_baselines":
+        return "evaluated; retained default because no candidate beat both baselines"
     if metadata["enabled"]:
         return f"requested but skipped ({metadata['reason']})"
     return "disabled"
@@ -803,14 +871,23 @@ def parse_threshold_values(raw: str) -> list[float]:
     return unique_values
 
 
-def run_threshold_sweep(raw: pd.DataFrame, artifacts_dir: Path, model_seed: int, threshold_values: list[float]) -> None:
+def run_threshold_sweep(
+    raw: pd.DataFrame,
+    artifacts_dir: Path,
+    model_seed: int,
+    threshold_values: list[float],
+    label_horizon: int,
+) -> None:
     rows = []
 
     for threshold in threshold_values:
-        processed = build_features(raw, bull_threshold=threshold, bear_threshold=-threshold)
-        split = int(len(processed) * 0.8)
-        train_df = processed.iloc[:split]
-        test_df = processed.iloc[split:]
+        processed = build_features(
+            raw,
+            bull_threshold=threshold,
+            bear_threshold=-threshold,
+            label_horizon=label_horizon,
+        )
+        train_df, test_df, _ = chronological_holdout(processed, label_horizon=label_horizon)
         if train_df.empty or test_df.empty:
             continue
 
@@ -866,10 +943,13 @@ def run_threshold_sweep(raw: pd.DataFrame, artifacts_dir: Path, model_seed: int,
     print(f"- {artifacts_dir / 'threshold_sweep_report.md'}")
 
 
-def run_feature_ablation(df: pd.DataFrame, artifacts_dir: Path, model_seed: int) -> None:
-    split = int(len(df) * 0.8)
-    train_df = df.iloc[:split]
-    test_df = df.iloc[split:]
+def run_feature_ablation(
+    df: pd.DataFrame,
+    artifacts_dir: Path,
+    model_seed: int,
+    label_horizon: int,
+) -> None:
+    train_df, test_df, _ = chronological_holdout(df, label_horizon=label_horizon)
 
     if train_df.empty or test_df.empty:
         (artifacts_dir / "feature_ablation_report.md").write_text(
@@ -939,7 +1019,14 @@ def run_feature_ablation(df: pd.DataFrame, artifacts_dir: Path, model_seed: int)
     print(f"- {artifacts_dir / 'feature_ablation_report.md'}")
 
 
-def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_size: int, model_seed: int) -> None:
+def run_walk_forward(
+    df: pd.DataFrame,
+    artifacts_dir: Path,
+    windows: int,
+    test_size: int,
+    model_seed: int,
+    label_horizon: int,
+) -> None:
     minimum_train_size = max(160, len(df) // 3)
     rows = []
 
@@ -949,7 +1036,10 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         if test_end > len(df):
             break
 
-        train_df = df.iloc[:train_end]
+        model_train_end = train_end - label_horizon
+        if model_train_end < 1:
+            break
+        train_df = df.iloc[:model_train_end]
         test_df = df.iloc[train_end:test_end]
         if len(test_df) < max(12, test_size // 2):
             break
@@ -957,7 +1047,12 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         model = build_model(model_seed)
         model.fit(train_df[FEATURE_COLS], train_df["target"])
         preds = model.predict(test_df[FEATURE_COLS])
-        majority_preds, persistence_preds = build_baseline_predictions(train_df, test_df)
+        majority_preds, persistence_preds = build_baseline_predictions(
+            train_df,
+            test_df,
+            label_horizon=label_horizon,
+            observable_target_history=df.iloc[:train_end]["target"],
+        )
         rf_accuracy = float(accuracy_score(test_df["target"], preds))
         majority_accuracy = float(accuracy_score(test_df["target"], majority_preds))
         persistence_accuracy = float(accuracy_score(test_df["target"], persistence_preds))
@@ -966,6 +1061,7 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
             {
                 "window": window_index + 1,
                 "train_rows": len(train_df),
+                "purged_rows": label_horizon,
                 "test_rows": len(test_df),
                 "start_date": test_df["date"].iloc[0].date().isoformat(),
                 "end_date": test_df["date"].iloc[-1].date().isoformat(),
@@ -993,6 +1089,8 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
     walk_forward_df.to_csv(artifacts_dir / "walk_forward_metrics.csv", index=False)
     summary_payload = {
         "windows_completed": int(len(walk_forward_df)),
+        "label_horizon": label_horizon,
+        "purged_rows_per_window": label_horizon,
         "mean_accuracy": round(float(walk_forward_df["accuracy"].mean()), 4),
         "best_window_accuracy": round(float(walk_forward_df["accuracy"].max()), 4),
         "worst_window_accuracy": round(float(walk_forward_df["accuracy"].min()), 4),
@@ -1011,6 +1109,8 @@ def run_walk_forward(df: pd.DataFrame, artifacts_dir: Path, windows: int, test_s
         "# Walk-Forward Evaluation",
         "",
         f"- Windows completed: {len(walk_forward_df)}",
+        f"- Label horizon: {label_horizon} trading row(s)",
+        f"- Purged rows per window: {label_horizon}",
         f"- Mean accuracy: {walk_forward_df['accuracy'].mean():.4f}",
         f"- Best window accuracy: {walk_forward_df['accuracy'].max():.4f}",
         f"- Worst window accuracy: {walk_forward_df['accuracy'].min():.4f}",
@@ -1045,6 +1145,12 @@ def main() -> None:
     parser.add_argument("--model-seed", type=int, default=42, help="Random seed for model training.")
     parser.add_argument("--bull-threshold", type=float, default=0.003, help="Future-return cutoff for the bull label.")
     parser.add_argument("--bear-threshold", type=float, default=-0.003, help="Future-return cutoff for the bear label.")
+    parser.add_argument(
+        "--label-horizon",
+        type=int,
+        default=1,
+        help="Trading rows ahead used to calculate the forward-return label; chronological splits purge the same number of rows.",
+    )
     parser.add_argument("--threshold-sweep", action="store_true", help="Evaluate multiple symmetric bull/bear label thresholds.")
     parser.add_argument("--feature-ablation", action="store_true", help="Measure holdout accuracy after dropping one engineered feature at a time.")
     parser.add_argument(
@@ -1078,6 +1184,8 @@ def main() -> None:
 
     if not args.use_synthetic and args.csv is None:
         raise SystemExit("Provide --csv path/to/file.csv or use --use-synthetic.")
+    if args.label_horizon < 1:
+        parser.error("--label-horizon must be at least 1.")
 
     if args.csv is not None:
         raw = load_csv(args.csv)
@@ -1085,13 +1193,20 @@ def main() -> None:
         raw = generate_synthetic_prices(points=max(300, args.synthetic_points), seed=args.synthetic_seed)
         raw = validate_price_series(raw)
 
-    processed = build_features(raw, bull_threshold=args.bull_threshold, bear_threshold=args.bear_threshold)
+    label_horizon = args.label_horizon
+    processed = build_features(
+        raw,
+        bull_threshold=args.bull_threshold,
+        bear_threshold=args.bear_threshold,
+        label_horizon=label_horizon,
+    )
     run_training(
         processed,
         args.artifacts,
         model_seed=args.model_seed,
         bull_threshold=args.bull_threshold,
         bear_threshold=args.bear_threshold,
+        label_horizon=label_horizon,
         calibrate_probabilities=args.calibrate_probabilities,
         calibration_fraction=min(max(args.calibration_fraction, 0.05), 0.4),
         calibration_method=args.calibration_method,
@@ -1104,6 +1219,7 @@ def main() -> None:
             windows=max(1, args.walk_forward_windows),
             test_size=max(20, args.walk_forward_test_size),
             model_seed=args.model_seed,
+            label_horizon=label_horizon,
         )
     if args.threshold_sweep:
         run_threshold_sweep(
@@ -1111,12 +1227,14 @@ def main() -> None:
             args.artifacts,
             model_seed=args.model_seed,
             threshold_values=parse_threshold_values(args.threshold_sweep_values),
+            label_horizon=label_horizon,
         )
     if args.feature_ablation:
         run_feature_ablation(
             processed,
             args.artifacts,
             model_seed=args.model_seed,
+            label_horizon=label_horizon,
         )
 
 

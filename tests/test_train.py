@@ -1,6 +1,11 @@
+import pandas as pd
+
 from src.train import (
     DEFAULT_MODEL_CONFIG,
+    build_baseline_predictions,
     build_features,
+    chronological_holdout,
+    fit_model_with_optional_calibration,
     generate_synthetic_prices,
     parse_threshold_values,
     select_model_config,
@@ -35,7 +40,7 @@ def test_select_model_config_returns_fallback_when_disabled() -> None:
     assert summary["reason"] == "disabled_by_flag"
 
 
-def test_select_model_config_builds_ranked_search_report() -> None:
+def test_select_model_config_rejects_candidates_that_miss_baselines() -> None:
     raw = generate_synthetic_prices(points=2200, seed=7)
     processed = build_features(raw)
 
@@ -45,11 +50,13 @@ def test_select_model_config_builds_ranked_search_report() -> None:
         enable_model_search=True,
     )
 
-    assert summary["applied"] is True
     assert summary["validation_rows"] >= 90
     assert len(search_df) >= 4
-    assert search_df.iloc[0]["config_name"] == selected_config["name"]
     top_row = search_df.iloc[0]
+    assert not bool(top_row["eligible_for_selection"])
+    assert selected_config["name"] == DEFAULT_MODEL_CONFIG["name"]
+    assert summary["applied"] is False
+    assert summary["reason"] == "no_candidate_beat_both_baselines"
     assert all(
         (
             (top_row["validation_accuracy"] > row["validation_accuracy"])
@@ -60,3 +67,63 @@ def test_select_model_config_builds_ranked_search_report() -> None:
         )
         for _, row in search_df.iterrows()
     )
+
+
+def test_build_features_aligns_and_drops_multi_day_labels() -> None:
+    raw = generate_synthetic_prices(points=160, seed=7)
+    processed = build_features(raw, bull_threshold=0.01, bear_threshold=-0.01, label_horizon=5)
+
+    last = processed.iloc[-1]
+    assert last["label_end_date"] == raw.iloc[-1]["date"]
+    expected_return = raw.iloc[-1]["close"] / last["close"] - 1
+    assert abs(last["forward_return"] - expected_return) < 1e-12
+    assert processed["label_end_date"].notna().all()
+    assert processed["forward_return"].notna().all()
+
+
+def test_chronological_holdout_purges_overlapping_labels() -> None:
+    processed = build_features(generate_synthetic_prices(points=300, seed=7), label_horizon=5)
+    train_df, test_df, history = chronological_holdout(processed, label_horizon=5)
+
+    assert len(history) == len(train_df) + 5
+    assert train_df.iloc[-1]["label_end_date"] < test_df.iloc[0]["date"]
+    assert processed.iloc[len(history) - 1]["label_end_date"] >= test_df.iloc[0]["date"]
+
+
+def test_persistence_baseline_uses_observable_horizon_lag() -> None:
+    train_df = pd.DataFrame({"target": [0, 0, 1, 1]})
+    test_df = pd.DataFrame({"target": [0, 2, 1, 2, 0]})
+    observable_history = pd.Series([0, 1, 2, 0, 1])
+
+    majority, persistence = build_baseline_predictions(
+        train_df,
+        test_df,
+        label_horizon=3,
+        observable_target_history=observable_history,
+    )
+
+    assert majority.tolist() == [0, 0, 0, 0, 0]
+    assert persistence.tolist() == [2, 0, 1, 0, 2]
+
+
+def test_uncalibrated_training_path_fits_without_name_error() -> None:
+    processed = build_features(generate_synthetic_prices(points=500, seed=7))
+    train_df, _, _ = chronological_holdout(processed, label_horizon=1)
+    small_config = {
+        "name": "test_forest",
+        "n_estimators": 10,
+        "min_samples_leaf": 4,
+        "max_depth": 5,
+    }
+
+    model, details = fit_model_with_optional_calibration(
+        train_df=train_df,
+        model_seed=42,
+        calibrate_probabilities=False,
+        calibration_fraction=0.2,
+        calibration_method="sigmoid",
+        model_config=small_config,
+    )
+
+    assert details["metadata"]["applied"] is False
+    assert len(model.predict(train_df.iloc[-5:][list(model.feature_names_in_)])) == 5

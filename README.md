@@ -4,9 +4,7 @@ Applied machine learning sandbox for market-regime classification with reproduci
 
 ## What this project does
 
-- Builds a labeled time-series dataset from either:
-  - synthetic regime-switching prices
-  - user-provided OHLCV CSV data
+- Builds a labeled time-series dataset from synthetic regime-switching prices or user-provided OHLCV CSV data.
 - Input validation now hard-fails on duplicate dates, non-numeric closes, or non-positive close values before feature engineering.
 - Engineers features commonly used in quant workflows:
   - log returns
@@ -14,23 +12,21 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - momentum windows
   - moving-average spread
   - RSI proxy
-- Trains a `RandomForestClassifier` using a strict chronological split (no random shuffle leakage).
+- Supports auditable one- or multi-session forward-return labels with explicit label end dates.
+- Trains a `RandomForestClassifier` using purge-aware chronological splits so training labels never cross validation, calibration, holdout, or walk-forward boundaries.
 - Produces evaluation artifacts:
   - classification report
   - confusion matrix (CSV)
   - feature importance table
-- confidence bucket table for triaging low-vs-high conviction predictions
-- confidence calibration table for spotting overconfident vs underconfident predictions
-- optional chronological probability calibration, with baseline-vs-calibrated Brier comparisons
-- explicit benchmark comparison versus persistence and majority-class baselines
-- holdout predictions with target/prediction labels
+  - confidence bucket and calibration tables
+  - explicit benchmark comparison versus horizon-aware persistence and majority-class baselines
+  - holdout predictions with target/prediction labels, forward returns, and label end dates
   - model summary JSON for downstream scripting
   - markdown run report
-- walk-forward metrics + markdown summary by default
-- optional threshold-sweep CSV + markdown report for label-cutoff tuning
-- optional feature-ablation CSV + markdown report for drop-one-feature sensitivity
-- optional chronological model-search CSV + markdown report for random-forest config selection
-- serialized model (`joblib`)
+- Runs walk-forward evaluation by default, with the same horizon purge and observable-label rules.
+- Supports optional threshold sweeps, feature ablation, chronological model search, and probability calibration.
+- Promotes a searched model configuration only if it beats both naive baselines on validation.
+- Serializes the fitted model with `joblib`.
 
 ## Why this is useful
 
@@ -53,9 +49,7 @@ Artifacts are written to `artifacts/`.
 
 Key outputs now include:
 
-- `test_predictions.csv`: holdout rows with actual vs predicted regime labels
-- `test_predictions.csv` now also includes per-class probabilities, confidence, and margin to runner-up
-- `test_predictions.csv` now also includes baseline-vs-calibrated confidence columns for probability audit work
+- `test_predictions.csv`: auditable holdout rows with label dates, forward returns, actual/predicted regimes, per-class probabilities, confidence, margin, and raw-vs-calibrated confidence columns
 - `model_summary.json`: compact machine-readable accuracy + feature summary
 - `benchmark_accuracy.csv`: whether the model actually beat naive persistence and class-majority baselines
 - `model_summary.json` now includes confidence posture and prediction mix
@@ -115,6 +109,16 @@ python -m src.train --use-synthetic --model-search
 
 That writes `model_search.csv` and `model_search_report.md`, then carries the selected configuration into the final holdout evaluation and optional probability calibration.
 
+## Leakage-safe forecast horizons
+
+The default target remains the next-session return. For a less noise-dominated regime benchmark, define both the forecast horizon and thresholds explicitly:
+
+```bash
+python -m src.train --use-synthetic --synthetic-points 3000 --label-horizon 10 --bull-threshold 0.012 --bear-threshold -0.012 --walk-forward-windows 4 --walk-forward-test-size 180
+```
+
+For a horizon of `N`, the pipeline removes the final `N` rows that do not have a realized label, purges `N` rows before every evaluation boundary, and lags the persistence baseline by `N`. This prevents future prices from leaking into training or into a deceptively strong one-row-lag baseline.
+
 ## Use your own data
 
 Input CSV should include:
@@ -132,8 +136,8 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- add probability calibration and threshold tuning
-- compare tree models against temporal neural baselines
+- validate the horizon-aware workflow on a checked-in, redistribution-safe market fixture
+- compare the maintained forest against a regularized linear baseline before adding more complex models
 
 ## Portfolio Repro Checklist
 
@@ -141,8 +145,8 @@ Use this sequence before publishing a run artifact:
 
 1. Baseline synthetic run:
 `python -m src.train --use-synthetic --artifacts artifacts/baseline`
-2. Baseline + walk-forward:
-`python -m src.train --use-synthetic --artifacts artifacts/walkforward`
+2. Multi-session benchmark + walk-forward:
+`python -m src.train --use-synthetic --synthetic-points 3000 --label-horizon 10 --bull-threshold 0.012 --bear-threshold -0.012 --artifacts artifacts/walkforward`
 3. Confirm both directories include:
 - `model_summary.json`
 - `test_predictions.csv`
@@ -163,8 +167,8 @@ Use this sequence before publishing a run artifact:
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
 - `walk_forward_summary.json`: includes how often the model beat persistence and majority baselines across windows
 - `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
-- `model_search.csv`: chronological validation scoreboard for maintained forest candidates before the final fit
-- `report.md`: human-facing summary worth linking in notes or portfolio discussion
+- `model_search.csv`: chronological validation scoreboard, including whether each forest candidate was eligible to replace the maintained default
+- `run_report.md`: human-facing summary worth linking in notes or portfolio discussion
 
 ## Label Tuning
 
