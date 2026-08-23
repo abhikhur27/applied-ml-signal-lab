@@ -1,0 +1,26 @@
+{
+  "fixture": "data/ecb_eur_usd_2012_2024.csv",
+  "metadata": "data/ecb_eur_usd_2012_2024.metadata.json",
+  "parameters": {
+    "model_seed": 42,
+    "label_horizon": 5,
+    "bull_threshold": 0.008,
+    "bear_threshold": -0.008,
+    "calibration_fraction": 0.2,
+    "calibration_method": "sigmoid",
+    "walk_forward_windows": 6,
+    "walk_forward_test_size": 240
+  },
+  "expectations": {
+    "fixture_rows": 3327,
+    "minimum_majority_advantage": 0.2,
+    "minimum_persistence_advantage": 0.05,
+    "calibration_rejection_reason": "audit_rejected_prediction_collapse",
+    "calibrated_audit_prediction_classes": 1,
+    "walk_forward_windows": 6,
+    "minimum_walk_forward_accuracy_range": 0.2,
+    "minimum_windows_beating_persistence": 1,
+    "maximum_windows_beating_persistence": 5,
+    "maximum_windows_beating_majority": 0
+  }
+}

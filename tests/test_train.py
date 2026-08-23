@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 
 from src.train import (
@@ -7,6 +9,8 @@ from src.train import (
     chronological_holdout,
     fit_model_with_optional_calibration,
     generate_synthetic_prices,
+    load_csv,
+    multiclass_brier_score,
     parse_threshold_values,
     select_model_config,
 )
@@ -127,3 +131,44 @@ def test_uncalibrated_training_path_fits_without_name_error() -> None:
 
     assert details["metadata"]["applied"] is False
     assert len(model.predict(train_df.iloc[-5:][list(model.feature_names_in_)])) == 5
+
+
+def test_multiclass_brier_score_averages_one_vs_rest_scores() -> None:
+    y_true = pd.Series([0, 1, 2]).to_numpy()
+    probabilities = pd.DataFrame(
+        [
+            [0.8, 0.1, 0.1],
+            [0.2, 0.6, 0.2],
+            [0.1, 0.2, 0.7],
+        ]
+    ).to_numpy()
+
+    assert abs(multiclass_brier_score(y_true, probabilities, pd.Series([0, 1, 2]).to_numpy()) - 0.0488888889) < 1e-9
+
+
+def test_real_fixture_rejects_calibration_prediction_collapse() -> None:
+    fixture = load_csv(Path("data/ecb_eur_usd_2012_2024.csv"))
+    processed = build_features(fixture, bull_threshold=0.008, bear_threshold=-0.008, label_horizon=5)
+    train_df, _, _ = chronological_holdout(processed, label_horizon=5)
+    test_config = {
+        "name": "test_forest",
+        "n_estimators": 40,
+        "min_samples_leaf": 6,
+        "max_depth": 8,
+    }
+
+    _, details = fit_model_with_optional_calibration(
+        train_df=train_df,
+        model_seed=42,
+        calibrate_probabilities=True,
+        calibration_fraction=0.2,
+        calibration_method="sigmoid",
+        model_config=test_config,
+        label_horizon=5,
+    )
+
+    metadata = details["metadata"]
+    assert metadata["applied"] is False
+    assert metadata["reason"] == "audit_rejected_prediction_collapse"
+    assert metadata["baseline_prediction_classes"] == 3
+    assert metadata["calibrated_prediction_classes"] == 1

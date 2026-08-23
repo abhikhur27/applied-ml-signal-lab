@@ -388,6 +388,7 @@ def run_training(
         preds,
         target_names=[label_names[0], label_names[1], label_names[2]],
         digits=4,
+        zero_division=0,
     )
     matrix = confusion_matrix(y_test, preds, labels=[0, 1, 2])
     matrix_df = pd.DataFrame(
@@ -660,6 +661,17 @@ def build_model(model_seed: int, config: dict[str, Any] | None = None) -> Random
     )
 
 
+def multiclass_brier_score(y_true: np.ndarray, probabilities: np.ndarray, classes: np.ndarray) -> float:
+    return float(
+        np.mean(
+            [
+                brier_score_loss((y_true == label).astype(int), probabilities[:, index])
+                for index, label in enumerate(classes)
+            ]
+        )
+    )
+
+
 def fit_model_with_optional_calibration(
     train_df: pd.DataFrame,
     model_seed: int,
@@ -690,9 +702,9 @@ def fit_model_with_optional_calibration(
             },
         }
 
-    calibration_rows = max(60, int(len(train_df) * calibration_fraction))
-    calibration_rows = min(calibration_rows, max(0, len(train_df) - 120 - label_horizon))
-    if calibration_rows < 45:
+    calibration_rows = max(120, int(len(train_df) * calibration_fraction))
+    calibration_rows = min(calibration_rows, max(0, len(train_df) - 120 - (2 * label_horizon)))
+    if calibration_rows < 120:
         base_model.fit(x_train, y_train)
         return base_model, {
             "fit_features": x_train,
@@ -709,13 +721,25 @@ def fit_model_with_optional_calibration(
             },
         }
 
-    fit_end = len(train_df) - calibration_rows - label_horizon
+    audit_rows = max(60, int(calibration_rows * 0.3))
+    calibration_start = len(train_df) - calibration_rows
+    fit_end = calibration_start - label_horizon
+    calibration_end = len(train_df) - audit_rows - label_horizon
     fit_df = train_df.iloc[:fit_end]
-    calibration_df = train_df.iloc[-calibration_rows:]
+    calibration_df = train_df.iloc[calibration_start:calibration_end]
+    audit_df = train_df.iloc[-audit_rows:]
     fit_labels = set(int(value) for value in fit_df["target"].unique())
     calibration_labels = set(int(value) for value in calibration_df["target"].unique())
+    audit_labels = set(int(value) for value in audit_df["target"].unique())
     all_labels = {0, 1, 2}
-    if fit_df.empty or calibration_df.empty or fit_labels != all_labels or calibration_labels != all_labels:
+    if (
+        fit_df.empty
+        or calibration_df.empty
+        or audit_df.empty
+        or fit_labels != all_labels
+        or calibration_labels != all_labels
+        or audit_labels != all_labels
+    ):
         base_model.fit(x_train, y_train)
         return base_model, {
             "fit_features": x_train,
@@ -725,9 +749,10 @@ def fit_model_with_optional_calibration(
                 "enabled": True,
                 "applied": False,
                 "method": calibration_method,
-                "reason": "missing_class_in_fit_or_calibration_slice",
+                "reason": "missing_class_in_fit_calibration_or_audit_slice",
                 "fit_rows": len(train_df),
-                "calibration_rows": calibration_rows,
+                "calibration_rows": len(calibration_df),
+                "audit_rows": len(audit_df),
                 "model_config": model_config["name"],
             },
         }
@@ -736,12 +761,57 @@ def fit_model_with_optional_calibration(
     y_fit = fit_df["target"]
     x_calibration = calibration_df[FEATURE_COLS]
     y_calibration = calibration_df["target"]
+    x_audit = audit_df[FEATURE_COLS]
+    y_audit = audit_df["target"].to_numpy()
     base_model.fit(x_fit, y_fit)
     calibrated_model = CalibratedClassifierCV(
         FrozenEstimator(base_model),
         method=calibration_method,
     )
     calibrated_model.fit(x_calibration, y_calibration)
+
+    baseline_audit_probs = base_model.predict_proba(x_audit)
+    calibrated_audit_probs = calibrated_model.predict_proba(x_audit)
+    baseline_audit_brier = multiclass_brier_score(y_audit, baseline_audit_probs, base_model.classes_)
+    calibrated_audit_brier = multiclass_brier_score(y_audit, calibrated_audit_probs, calibrated_model.classes_)
+    audit_brier_delta = calibrated_audit_brier - baseline_audit_brier
+    baseline_prediction_classes = int(np.unique(base_model.predict(x_audit)).size)
+    calibrated_prediction_classes = int(np.unique(calibrated_model.predict(x_audit)).size)
+    collapsed_predictions = calibrated_prediction_classes < min(2, len(audit_labels))
+    audit_metadata = {
+        "audit_rows": len(audit_df),
+        "audit_start_date": audit_df["date"].iloc[0].date().isoformat(),
+        "audit_end_date": audit_df["date"].iloc[-1].date().isoformat(),
+        "baseline_multiclass_brier": round(baseline_audit_brier, 4),
+        "calibrated_multiclass_brier": round(calibrated_audit_brier, 4),
+        "multiclass_brier_delta": round(audit_brier_delta, 4),
+        "baseline_prediction_classes": baseline_prediction_classes,
+        "calibrated_prediction_classes": calibrated_prediction_classes,
+    }
+
+    if collapsed_predictions or audit_brier_delta >= -0.001:
+        fallback_model = build_model(model_seed, model_config)
+        fallback_model.fit(x_train, y_train)
+        reason = "audit_rejected_prediction_collapse" if collapsed_predictions else "audit_rejected_no_brier_improvement"
+        return fallback_model, {
+            "fit_features": x_train,
+            "importance_model": fallback_model,
+            "baseline_probabilities": fallback_model.predict_proba,
+            "metadata": {
+                "enabled": True,
+                "applied": False,
+                "method": calibration_method,
+                "reason": reason,
+                "fit_rows": len(train_df),
+                "calibration_rows": len(calibration_df),
+                "purged_rows": 2 * label_horizon,
+                "model_config": model_config["name"],
+                "calibration_start_date": calibration_df["date"].iloc[0].date().isoformat(),
+                "calibration_end_date": calibration_df["date"].iloc[-1].date().isoformat(),
+                **audit_metadata,
+            },
+        }
+
     return calibrated_model, {
         "fit_features": x_fit,
         "importance_model": base_model,
@@ -750,13 +820,14 @@ def fit_model_with_optional_calibration(
             "enabled": True,
             "applied": True,
             "method": calibration_method,
-            "reason": "applied",
+            "reason": "audit_passed",
             "fit_rows": len(fit_df),
             "calibration_rows": len(calibration_df),
-            "purged_rows": label_horizon,
+            "purged_rows": 2 * label_horizon,
             "model_config": model_config["name"],
             "calibration_start_date": calibration_df["date"].iloc[0].date().isoformat(),
             "calibration_end_date": calibration_df["date"].iloc[-1].date().isoformat(),
+            **audit_metadata,
         },
     }
 

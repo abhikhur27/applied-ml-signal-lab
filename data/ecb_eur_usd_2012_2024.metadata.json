@@ -1,0 +1,24 @@
+{
+  "name": "ECB EUR/USD reference-rate benchmark fixture",
+  "source": "European Central Bank",
+  "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip",
+  "source_page": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html",
+  "reuse_policy": "https://www.ecb.europa.eu/stats/ecb_statistics/governance_and_quality_framework/html/usage_policy.en.html",
+  "date_range": {
+    "start": "2012-01-01",
+    "end": "2024-12-31"
+  },
+  "rows": 3327,
+  "columns": {
+    "date": "ECB observation date",
+    "close": "USD per EUR reference rate (ECB USD column; renamed only for pipeline compatibility)"
+  },
+  "transformations": [
+    "selected the Date and USD columns",
+    "removed rows where the USD value was unavailable",
+    "limited observations to the fixed inclusive date range",
+    "sorted observations chronologically",
+    "renamed Date to date and USD to close"
+  ],
+  "fixture_sha256": "f45668667a2ecd3f85e84caecee32626b66c6c00d892e7134af2a1f1b24340ac"
+}

@@ -24,8 +24,9 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - model summary JSON for downstream scripting
   - markdown run report
 - Runs walk-forward evaluation by default, with the same horizon purge and observable-label rules.
-- Supports optional threshold sweeps, feature ablation, chronological model search, and probability calibration.
+- Supports optional threshold sweeps, feature ablation, chronological model search, and audited probability calibration.
 - Promotes a searched model configuration only if it beats both naive baselines on validation.
+- Applies probability calibration only when it improves multiclass Brier score on a separate chronological audit slice without collapsing prediction diversity.
 - Serializes the fitted model with `joblib`.
 
 ## Why this is useful
@@ -109,6 +110,20 @@ python -m src.train --use-synthetic --model-search
 
 That writes `model_search.csv` and `model_search_report.md`, then carries the selected configuration into the final holdout evaluation and optional probability calibration.
 
+## Frozen real-data benchmark
+
+The repo includes a 3,327-row EUR/USD reference-rate fixture from the European Central Bank covering 2012 through 2024. It is a real financial series with checked-in provenance, a fixed checksum, and an official-data updater—not synthetic price generation presented as market evidence.
+
+Run the full credibility gate with:
+
+```bash
+python -m src.benchmark --artifacts artifacts/ecb-benchmark
+```
+
+The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, and six walk-forward windows. Its expected conclusion is deliberately negative: on this fixture and fixed five-session target, the maintained forest loses to persistence and majority-class baselines. Sigmoid calibration improves audit-slice Brier score but collapses to one predicted class, so the pipeline rejects it and refits the uncalibrated model on the full training window.
+
+This benchmark is a regression contract for honest behavior, not evidence of a tradable signal. See [`data/README.md`](data/README.md) for source and reuse details and [`benchmarks/ecb_eur_usd_contract.json`](benchmarks/ecb_eur_usd_contract.json) for the fixed expectations.
+
 ## Leakage-safe forecast horizons
 
 The default target remains the next-session return. For a less noise-dominated regime benchmark, define both the forecast horizon and thresholds explicitly:
@@ -136,8 +151,8 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- validate the horizon-aware workflow on a checked-in, redistribution-safe market fixture
 - compare the maintained forest against a regularized linear baseline before adding more complex models
+- test whether economically motivated features can beat the frozen ECB baselines without loosening the contract
 
 ## Portfolio Repro Checklist
 

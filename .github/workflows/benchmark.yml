@@ -1,0 +1,19 @@
+name: Verification
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python -m src.benchmark --artifacts artifacts/ecb-benchmark
