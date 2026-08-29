@@ -14,12 +14,13 @@ Applied machine learning sandbox for market-regime classification with reproduci
   - RSI proxy
 - Supports auditable one- or multi-session forward-return labels with explicit label end dates.
 - Trains a `RandomForestClassifier` using purge-aware chronological splits so training labels never cross validation, calibration, holdout, or walk-forward boundaries.
+- Fits a standardized, class-balanced logistic challenger on the same leakage-safe rows so the forest is compared with a simpler model family, not only naive labels.
 - Produces evaluation artifacts:
   - classification report
   - confusion matrix (CSV)
   - feature importance table
   - confidence bucket and calibration tables
-  - explicit benchmark comparison versus horizon-aware persistence and majority-class baselines
+  - benchmark comparison versus regularized logistic, horizon-aware persistence, and majority-class baselines using accuracy, balanced accuracy, and macro-F1
   - holdout predictions with target/prediction labels, forward returns, and label end dates
   - model summary JSON for downstream scripting
   - markdown run report
@@ -52,7 +53,7 @@ Key outputs now include:
 
 - `test_predictions.csv`: auditable holdout rows with label dates, forward returns, actual/predicted regimes, per-class probabilities, confidence, margin, and raw-vs-calibrated confidence columns
 - `model_summary.json`: compact machine-readable accuracy + feature summary
-- `benchmark_accuracy.csv`: whether the model actually beat naive persistence and class-majority baselines
+- `benchmark_accuracy.csv`: accuracy, balanced accuracy, macro-F1, prediction mix, and forest-relative deltas for the forest, regularized-logistic challenger, persistence, and majority baselines
 - `model_summary.json` now includes confidence posture and prediction mix
 - `confidence_buckets.csv`: row counts and accuracy by confidence band so weak predictions are easier to triage
 - `confidence_calibration.csv`: decile-style confidence calibration table with empirical accuracy and confidence gap
@@ -60,7 +61,7 @@ Key outputs now include:
 - `class_balance.csv`: dataset label mix so class skew is visible before you trust the accuracy
 - `feature_drift.csv`: train-vs-test feature shift table so covariate drift is visible before you trust a holdout win
 - `walk_forward_metrics.csv`: expanding-window accuracy by evaluation slice
-- `walk_forward_metrics.csv` now also includes persistence/majority baseline accuracy so each window shows whether the model added real signal
+- `walk_forward_metrics.csv` includes all three metrics for the forest, regularized-logistic challenger, persistence, and majority baselines so each window exposes both overall accuracy and class coverage
 
 If you want the fastest baseline-only pass, skip walk-forward explicitly:
 
@@ -120,7 +121,7 @@ Run the full credibility gate with:
 python -m src.benchmark --artifacts artifacts/ecb-benchmark
 ```
 
-The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, and six walk-forward windows. Its expected conclusion is deliberately negative: on this fixture and fixed five-session target, the maintained forest loses to persistence and majority-class baselines. Sigmoid calibration improves audit-slice Brier score but collapses to one predicted class, so the pipeline rejects it and refits the uncalibrated model on the full training window.
+The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, a regularized linear challenger, and six walk-forward windows. Its conclusion is deliberately negative and more specific than a single accuracy score: on this fixture and fixed five-session target, the maintained forest loses to persistence and majority-class baselines on raw accuracy. The logistic challenger also beats the forest on holdout accuracy, balanced accuracy, and macro-F1 while covering all three classes. Across walk-forward regimes the logistic model has higher mean accuracy, while the forest still wins macro-F1 in five of six windows. Sigmoid calibration improves audit-slice Brier score but collapses to one predicted class, so the pipeline rejects it and refits the uncalibrated forest on the full training window.
 
 This benchmark is a regression contract for honest behavior, not evidence of a tradable signal. See [`data/README.md`](data/README.md) for source and reuse details and [`benchmarks/ecb_eur_usd_contract.json`](benchmarks/ecb_eur_usd_contract.json) for the fixed expectations.
 
@@ -151,8 +152,8 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- compare the maintained forest against a regularized linear baseline before adding more complex models
-- test whether economically motivated features can beat the frozen ECB baselines without loosening the contract
+- promote a model family only through chronological validation rather than selecting it on the final holdout
+- test whether economically motivated features can beat both maintained model families without loosening the frozen ECB contract
 
 ## Portfolio Repro Checklist
 
@@ -176,11 +177,11 @@ Use this sequence before publishing a run artifact:
 ## Artifact reading guide
 
 - `model_summary.json`: quickest machine-readable snapshot of accuracy, class mix, and confidence posture
-- `benchmark_accuracy.csv`: first sanity check for whether the model beats trivial baselines at all
+- `benchmark_accuracy.csv`: first sanity check for whether the forest beats the linear challenger or trivial baselines, including class-sensitive metrics
 - `test_predictions.csv`: holdout prediction ledger for false-positive / false-negative review
 - `probability_comparison.csv`: whether calibration improved per-class Brier score or merely shifted confidence
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
-- `walk_forward_summary.json`: includes how often the model beat persistence and majority baselines across windows
+- `walk_forward_summary.json`: includes mean metrics and how often the forest beat logistic, persistence, and majority baselines across windows
 - `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
 - `model_search.csv`: chronological validation scoreboard, including whether each forest candidate was eligible to replace the maintained default
 - `run_report.md`: human-facing summary worth linking in notes or portfolio discussion

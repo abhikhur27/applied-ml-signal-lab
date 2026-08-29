@@ -11,9 +11,12 @@ import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.frozen import FrozenEstimator
-from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 from sklearn.metrics import brier_score_loss
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 FEATURE_COLS = [
     "log_ret_1",
@@ -196,19 +199,35 @@ def build_baseline_predictions(
     return majority_preds, persistence_preds
 
 
-def build_benchmark_summary(y_true: pd.Series, rf_preds: np.ndarray, majority_preds: np.ndarray, persistence_preds: np.ndarray) -> pd.DataFrame:
+def classification_metrics(y_true: pd.Series | np.ndarray, predictions: np.ndarray) -> dict[str, float]:
+    return {
+        "accuracy": round(float(accuracy_score(y_true, predictions)), 4),
+        "balanced_accuracy": round(float(balanced_accuracy_score(y_true, predictions)), 4),
+        "macro_f1": round(float(f1_score(y_true, predictions, average="macro", zero_division=0)), 4),
+    }
+
+
+def build_benchmark_summary(
+    y_true: pd.Series,
+    rf_preds: np.ndarray,
+    linear_preds: np.ndarray,
+    majority_preds: np.ndarray,
+    persistence_preds: np.ndarray,
+) -> pd.DataFrame:
     y_array = y_true.to_numpy()
     rows = []
     benchmark_map = {
         "random_forest": rf_preds,
+        "regularized_logistic": linear_preds,
         "persistence": persistence_preds,
         "majority_class": majority_preds,
     }
     for name, preds in benchmark_map.items():
+        metrics = classification_metrics(y_array, preds)
         rows.append(
             {
                 "model": name,
-                "accuracy": round(float(accuracy_score(y_array, preds)), 4),
+                **metrics,
                 "bull_share": round(float((preds == 2).mean()), 4),
                 "neutral_share": round(float((preds == 1).mean()), 4),
                 "bear_share": round(float((preds == 0).mean()), 4),
@@ -216,8 +235,11 @@ def build_benchmark_summary(y_true: pd.Series, rf_preds: np.ndarray, majority_pr
         )
 
     benchmark_df = pd.DataFrame(rows)
-    rf_accuracy = float(benchmark_df.loc[benchmark_df["model"] == "random_forest", "accuracy"].iloc[0])
-    benchmark_df["accuracy_delta_vs_random_forest"] = benchmark_df["accuracy"].apply(lambda value: round(float(value - rf_accuracy), 4))
+    rf_row = benchmark_df.loc[benchmark_df["model"] == "random_forest"].iloc[0]
+    for metric in ["accuracy", "balanced_accuracy", "macro_f1"]:
+        benchmark_df[f"{metric}_delta_vs_random_forest"] = benchmark_df[metric].apply(
+            lambda value, baseline=float(rf_row[metric]): round(float(value - baseline), 4)
+        )
     return benchmark_df
 
 
@@ -369,6 +391,9 @@ def run_training(
     baseline_probs = calibration_summary["baseline_probabilities"](x_test)
     probs = fitted_model.predict_proba(x_test)
     preds = fitted_model.predict(x_test)
+    linear_model = build_linear_challenger(model_seed)
+    linear_model.fit(train_df[FEATURE_COLS], train_df["target"])
+    linear_preds = linear_model.predict(x_test)
     majority_preds, persistence_preds = build_baseline_predictions(
         train_df,
         test_df,
@@ -378,6 +403,7 @@ def run_training(
     benchmark_df = build_benchmark_summary(
         y_true=y_test,
         rf_preds=preds,
+        linear_preds=linear_preds,
         majority_preds=majority_preds,
         persistence_preds=persistence_preds,
     )
@@ -410,6 +436,8 @@ def run_training(
     predictions_df["majority_prediction_label"] = pd.Series(majority_preds).map(label_names)
     predictions_df["persistence_prediction"] = persistence_preds
     predictions_df["persistence_prediction_label"] = pd.Series(persistence_preds).map(label_names)
+    predictions_df["linear_prediction"] = linear_preds
+    predictions_df["linear_prediction_label"] = pd.Series(linear_preds).map(label_names)
     predictions_df["baseline_prob_bear"] = baseline_probs[:, 0]
     predictions_df["baseline_prob_neutral"] = baseline_probs[:, 1]
     predictions_df["baseline_prob_bull"] = baseline_probs[:, 2]
@@ -503,6 +531,8 @@ def run_training(
         "probability_calibration": calibration_summary["metadata"],
         "model_selection": model_search_summary,
         "test_accuracy": round(float(accuracy_score(y_test, preds)), 4),
+        "test_balanced_accuracy": round(float(balanced_accuracy_score(y_test, preds)), 4),
+        "test_macro_f1": round(float(f1_score(y_test, preds, average="macro", zero_division=0)), 4),
         "benchmark_accuracy": benchmark_df.to_dict(orient="records"),
         "mean_confidence": round(float(predictions_df["confidence"].mean()), 4),
         "baseline_mean_confidence": round(float(predictions_df["baseline_confidence"].mean()), 4),
@@ -531,6 +561,7 @@ def run_training(
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(fitted_model, artifacts_dir / "regime_classifier.joblib")
+    joblib.dump(linear_model, artifacts_dir / "regularized_logistic_challenger.joblib")
     matrix_df.to_csv(artifacts_dir / "confusion_matrix.csv", index=True)
     importance.to_csv(artifacts_dir / "feature_importance.csv", index=False)
     class_balance.to_csv(artifacts_dir / "class_balance.csv", index=False)
@@ -582,6 +613,11 @@ def run_training(
         f"- Selected model config: {model_search_summary['selected_config']}",
         f"- Model search: {format_model_search_status(model_search_summary)}",
         f"- Probability calibration: {format_calibration_status(calibration_summary['metadata'])}",
+        f"- Random-forest balanced accuracy: {benchmark_df.loc[benchmark_df['model'] == 'random_forest', 'balanced_accuracy'].iloc[0]:.4f}",
+        f"- Random-forest macro-F1: {benchmark_df.loc[benchmark_df['model'] == 'random_forest', 'macro_f1'].iloc[0]:.4f}",
+        f"- Regularized-logistic accuracy: {benchmark_df.loc[benchmark_df['model'] == 'regularized_logistic', 'accuracy'].iloc[0]:.4f}",
+        f"- Regularized-logistic balanced accuracy: {benchmark_df.loc[benchmark_df['model'] == 'regularized_logistic', 'balanced_accuracy'].iloc[0]:.4f}",
+        f"- Regularized-logistic macro-F1: {benchmark_df.loc[benchmark_df['model'] == 'regularized_logistic', 'macro_f1'].iloc[0]:.4f}",
         f"- Persistence benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'persistence', 'accuracy'].iloc[0]:.4f}",
         f"- Majority-class benchmark accuracy: {benchmark_df.loc[benchmark_df['model'] == 'majority_class', 'accuracy'].iloc[0]:.4f}",
         f"- Mean confidence: {predictions_df['confidence'].mean():.4f}",
@@ -633,6 +669,7 @@ def run_training(
     print(report)
     print("\nSaved artifacts:")
     print(f"- {artifacts_dir / 'regime_classifier.joblib'}")
+    print(f"- {artifacts_dir / 'regularized_logistic_challenger.joblib'}")
     print(f"- {artifacts_dir / 'confusion_matrix.csv'}")
     print(f"- {artifacts_dir / 'feature_importance.csv'}")
     print(f"- {artifacts_dir / 'class_balance.csv'}")
@@ -658,6 +695,23 @@ def build_model(model_seed: int, config: dict[str, Any] | None = None) -> Random
         max_depth=int(resolved["max_depth"]),
         random_state=model_seed,
         class_weight="balanced_subsample",
+    )
+
+
+def build_linear_challenger(model_seed: int) -> Pipeline:
+    return Pipeline(
+        [
+            ("scale", StandardScaler()),
+            (
+                "classifier",
+                LogisticRegression(
+                    C=1.0,
+                    class_weight="balanced",
+                    max_iter=2000,
+                    random_state=model_seed,
+                ),
+            ),
+        ]
     )
 
 
@@ -1116,17 +1170,21 @@ def run_walk_forward(
             break
 
         model = build_model(model_seed)
+        linear_model = build_linear_challenger(model_seed)
         model.fit(train_df[FEATURE_COLS], train_df["target"])
+        linear_model.fit(train_df[FEATURE_COLS], train_df["target"])
         preds = model.predict(test_df[FEATURE_COLS])
+        linear_preds = linear_model.predict(test_df[FEATURE_COLS])
         majority_preds, persistence_preds = build_baseline_predictions(
             train_df,
             test_df,
             label_horizon=label_horizon,
             observable_target_history=df.iloc[:train_end]["target"],
         )
-        rf_accuracy = float(accuracy_score(test_df["target"], preds))
-        majority_accuracy = float(accuracy_score(test_df["target"], majority_preds))
-        persistence_accuracy = float(accuracy_score(test_df["target"], persistence_preds))
+        rf_metrics = classification_metrics(test_df["target"], preds)
+        linear_metrics = classification_metrics(test_df["target"], linear_preds)
+        majority_metrics = classification_metrics(test_df["target"], majority_preds)
+        persistence_metrics = classification_metrics(test_df["target"], persistence_preds)
 
         rows.append(
             {
@@ -1136,11 +1194,25 @@ def run_walk_forward(
                 "test_rows": len(test_df),
                 "start_date": test_df["date"].iloc[0].date().isoformat(),
                 "end_date": test_df["date"].iloc[-1].date().isoformat(),
-                "accuracy": round(rf_accuracy, 4),
-                "persistence_accuracy": round(persistence_accuracy, 4),
-                "majority_accuracy": round(majority_accuracy, 4),
-                "accuracy_vs_persistence": round(rf_accuracy - persistence_accuracy, 4),
-                "accuracy_vs_majority": round(rf_accuracy - majority_accuracy, 4),
+                "accuracy": rf_metrics["accuracy"],
+                "balanced_accuracy": rf_metrics["balanced_accuracy"],
+                "macro_f1": rf_metrics["macro_f1"],
+                "linear_accuracy": linear_metrics["accuracy"],
+                "linear_balanced_accuracy": linear_metrics["balanced_accuracy"],
+                "linear_macro_f1": linear_metrics["macro_f1"],
+                "persistence_accuracy": persistence_metrics["accuracy"],
+                "persistence_balanced_accuracy": persistence_metrics["balanced_accuracy"],
+                "persistence_macro_f1": persistence_metrics["macro_f1"],
+                "majority_accuracy": majority_metrics["accuracy"],
+                "majority_balanced_accuracy": majority_metrics["balanced_accuracy"],
+                "majority_macro_f1": majority_metrics["macro_f1"],
+                "accuracy_vs_linear": round(rf_metrics["accuracy"] - linear_metrics["accuracy"], 4),
+                "balanced_accuracy_vs_linear": round(
+                    rf_metrics["balanced_accuracy"] - linear_metrics["balanced_accuracy"], 4
+                ),
+                "macro_f1_vs_linear": round(rf_metrics["macro_f1"] - linear_metrics["macro_f1"], 4),
+                "accuracy_vs_persistence": round(rf_metrics["accuracy"] - persistence_metrics["accuracy"], 4),
+                "accuracy_vs_majority": round(rf_metrics["accuracy"] - majority_metrics["accuracy"], 4),
                 "bull_share": round(float((preds == 2).mean()), 4),
                 "bear_share": round(float((preds == 0).mean()), 4),
             }
@@ -1163,14 +1235,24 @@ def run_walk_forward(
         "label_horizon": label_horizon,
         "purged_rows_per_window": label_horizon,
         "mean_accuracy": round(float(walk_forward_df["accuracy"].mean()), 4),
+        "mean_balanced_accuracy": round(float(walk_forward_df["balanced_accuracy"].mean()), 4),
+        "mean_macro_f1": round(float(walk_forward_df["macro_f1"].mean()), 4),
         "best_window_accuracy": round(float(walk_forward_df["accuracy"].max()), 4),
         "worst_window_accuracy": round(float(walk_forward_df["accuracy"].min()), 4),
         "mean_persistence_accuracy": round(float(walk_forward_df["persistence_accuracy"].mean()), 4),
         "mean_majority_accuracy": round(float(walk_forward_df["majority_accuracy"].mean()), 4),
+        "mean_linear_accuracy": round(float(walk_forward_df["linear_accuracy"].mean()), 4),
+        "mean_linear_balanced_accuracy": round(float(walk_forward_df["linear_balanced_accuracy"].mean()), 4),
+        "mean_linear_macro_f1": round(float(walk_forward_df["linear_macro_f1"].mean()), 4),
         "mean_accuracy_vs_persistence": round(float(walk_forward_df["accuracy_vs_persistence"].mean()), 4),
         "mean_accuracy_vs_majority": round(float(walk_forward_df["accuracy_vs_majority"].mean()), 4),
         "windows_beating_persistence": int((walk_forward_df["accuracy"] > walk_forward_df["persistence_accuracy"]).sum()),
         "windows_beating_majority": int((walk_forward_df["accuracy"] > walk_forward_df["majority_accuracy"]).sum()),
+        "windows_beating_linear_accuracy": int((walk_forward_df["accuracy"] > walk_forward_df["linear_accuracy"]).sum()),
+        "windows_beating_linear_balanced_accuracy": int(
+            (walk_forward_df["balanced_accuracy"] > walk_forward_df["linear_balanced_accuracy"]).sum()
+        ),
+        "windows_beating_linear_macro_f1": int((walk_forward_df["macro_f1"] > walk_forward_df["linear_macro_f1"]).sum()),
         "mean_bull_share": round(float(walk_forward_df["bull_share"].mean()), 4),
         "mean_bear_share": round(float(walk_forward_df["bear_share"].mean()), 4),
     }
@@ -1183,12 +1265,20 @@ def run_walk_forward(
         f"- Label horizon: {label_horizon} trading row(s)",
         f"- Purged rows per window: {label_horizon}",
         f"- Mean accuracy: {walk_forward_df['accuracy'].mean():.4f}",
+        f"- Mean balanced accuracy: {walk_forward_df['balanced_accuracy'].mean():.4f}",
+        f"- Mean macro-F1: {walk_forward_df['macro_f1'].mean():.4f}",
+        f"- Regularized-logistic mean accuracy: {walk_forward_df['linear_accuracy'].mean():.4f}",
+        f"- Regularized-logistic mean balanced accuracy: {walk_forward_df['linear_balanced_accuracy'].mean():.4f}",
+        f"- Regularized-logistic mean macro-F1: {walk_forward_df['linear_macro_f1'].mean():.4f}",
         f"- Best window accuracy: {walk_forward_df['accuracy'].max():.4f}",
         f"- Worst window accuracy: {walk_forward_df['accuracy'].min():.4f}",
         f"- Mean persistence accuracy: {walk_forward_df['persistence_accuracy'].mean():.4f}",
         f"- Mean majority accuracy: {walk_forward_df['majority_accuracy'].mean():.4f}",
         f"- Windows beating persistence: {(walk_forward_df['accuracy'] > walk_forward_df['persistence_accuracy']).sum()} / {len(walk_forward_df)}",
         f"- Windows beating majority: {(walk_forward_df['accuracy'] > walk_forward_df['majority_accuracy']).sum()} / {len(walk_forward_df)}",
+        f"- Windows beating regularized logistic (accuracy): {(walk_forward_df['accuracy'] > walk_forward_df['linear_accuracy']).sum()} / {len(walk_forward_df)}",
+        f"- Windows beating regularized logistic (balanced accuracy): {(walk_forward_df['balanced_accuracy'] > walk_forward_df['linear_balanced_accuracy']).sum()} / {len(walk_forward_df)}",
+        f"- Windows beating regularized logistic (macro-F1): {(walk_forward_df['macro_f1'] > walk_forward_df['linear_macro_f1']).sum()} / {len(walk_forward_df)}",
         "",
         "## Window metrics",
         "```",

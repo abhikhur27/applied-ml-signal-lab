@@ -15,12 +15,18 @@
     "fixture_rows": 3327,
     "minimum_majority_advantage": 0.2,
     "minimum_persistence_advantage": 0.05,
+    "minimum_linear_accuracy_advantage": 0.02,
+    "minimum_linear_balanced_accuracy_advantage": 0.02,
+    "minimum_linear_macro_f1_advantage": 0.015,
+    "linear_prediction_classes": 3,
     "calibration_rejection_reason": "audit_rejected_prediction_collapse",
     "calibrated_audit_prediction_classes": 1,
     "walk_forward_windows": 6,
     "minimum_walk_forward_accuracy_range": 0.2,
     "minimum_windows_beating_persistence": 1,
     "maximum_windows_beating_persistence": 5,
-    "maximum_windows_beating_majority": 0
+    "maximum_windows_beating_majority": 0,
+    "minimum_linear_walk_forward_mean_advantage": 0.04,
+    "minimum_forest_windows_beating_linear_macro_f1": 3
   }
 }

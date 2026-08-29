@@ -4,8 +4,11 @@ import pandas as pd
 
 from src.train import (
     DEFAULT_MODEL_CONFIG,
+    FEATURE_COLS,
     build_baseline_predictions,
+    build_benchmark_summary,
     build_features,
+    build_linear_challenger,
     chronological_holdout,
     fit_model_with_optional_calibration,
     generate_synthetic_prices,
@@ -144,6 +147,35 @@ def test_multiclass_brier_score_averages_one_vs_rest_scores() -> None:
     ).to_numpy()
 
     assert abs(multiclass_brier_score(y_true, probabilities, pd.Series([0, 1, 2]).to_numpy()) - 0.0488888889) < 1e-9
+
+
+def test_benchmark_summary_exposes_class_coverage_beyond_accuracy() -> None:
+    y_true = pd.Series([0, 1, 2, 0, 1, 2])
+    summary = build_benchmark_summary(
+        y_true=y_true,
+        rf_preds=pd.Series([0, 0, 2, 0, 1, 1]).to_numpy(),
+        linear_preds=y_true.to_numpy(),
+        majority_preds=pd.Series([1, 1, 1, 1, 1, 1]).to_numpy(),
+        persistence_preds=pd.Series([2, 0, 1, 2, 0, 1]).to_numpy(),
+    ).set_index("model")
+
+    assert summary.loc["regularized_logistic", "macro_f1"] == 1.0
+    assert summary.loc["majority_class", "accuracy"] == 0.3333
+    assert summary.loc["majority_class", "balanced_accuracy"] == 0.3333
+    assert summary.loc["majority_class", "macro_f1"] == 0.1667
+
+
+def test_regularized_linear_challenger_scales_features_and_covers_real_fixture_classes() -> None:
+    fixture = load_csv(Path("data/ecb_eur_usd_2012_2024.csv"))
+    processed = build_features(fixture, bull_threshold=0.008, bear_threshold=-0.008, label_horizon=5)
+    train_df, test_df, _ = chronological_holdout(processed, label_horizon=5)
+    model = build_linear_challenger(model_seed=42)
+
+    model.fit(train_df[FEATURE_COLS], train_df["target"])
+    predictions = model.predict(test_df[FEATURE_COLS])
+
+    assert list(model.named_steps) == ["scale", "classifier"]
+    assert set(predictions) == {0, 1, 2}
 
 
 def test_real_fixture_rejects_calibration_prediction_collapse() -> None:

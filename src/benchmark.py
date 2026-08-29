@@ -32,7 +32,10 @@ def evaluate_contract(
     walk_forward: dict[str, Any],
 ) -> list[dict[str, Any]]:
     expected = contract["expectations"]
-    benchmarks = {row["model"]: row["accuracy"] for row in model_summary["benchmark_accuracy"]}
+    benchmark_rows = {row["model"]: row for row in model_summary["benchmark_accuracy"]}
+    benchmarks = {name: row["accuracy"] for name, row in benchmark_rows.items()}
+    forest = benchmark_rows["random_forest"]
+    linear = benchmark_rows["regularized_logistic"]
     calibration = model_summary["probability_calibration"]
     checks: list[dict[str, Any]] = []
 
@@ -52,6 +55,35 @@ def evaluate_contract(
         benchmarks["persistence"] - benchmarks["random_forest"] >= expected["minimum_persistence_advantage"],
         round(benchmarks["persistence"] - benchmarks["random_forest"], 4),
         f">= {expected['minimum_persistence_advantage']}",
+    )
+    add_check(
+        checks,
+        "regularized linear holdout accuracy advantage",
+        linear["accuracy"] - forest["accuracy"] >= expected["minimum_linear_accuracy_advantage"],
+        round(linear["accuracy"] - forest["accuracy"], 4),
+        f">= {expected['minimum_linear_accuracy_advantage']}",
+    )
+    add_check(
+        checks,
+        "regularized linear holdout balanced-accuracy advantage",
+        linear["balanced_accuracy"] - forest["balanced_accuracy"] >= expected["minimum_linear_balanced_accuracy_advantage"],
+        round(linear["balanced_accuracy"] - forest["balanced_accuracy"], 4),
+        f">= {expected['minimum_linear_balanced_accuracy_advantage']}",
+    )
+    add_check(
+        checks,
+        "regularized linear holdout macro-F1 advantage",
+        linear["macro_f1"] - forest["macro_f1"] >= expected["minimum_linear_macro_f1_advantage"],
+        round(linear["macro_f1"] - forest["macro_f1"], 4),
+        f">= {expected['minimum_linear_macro_f1_advantage']}",
+    )
+    linear_prediction_classes = sum(linear[f"{label}_share"] > 0 for label in ["bear", "neutral", "bull"])
+    add_check(
+        checks,
+        "regularized linear class coverage",
+        linear_prediction_classes == expected["linear_prediction_classes"],
+        linear_prediction_classes,
+        str(expected["linear_prediction_classes"]),
     )
     add_check(
         checks,
@@ -96,6 +128,21 @@ def evaluate_contract(
         walk_forward["windows_beating_majority"] <= expected["maximum_windows_beating_majority"],
         walk_forward["windows_beating_majority"],
         f"<= {expected['maximum_windows_beating_majority']}",
+    )
+    linear_mean_advantage = round(walk_forward["mean_linear_accuracy"] - walk_forward["mean_accuracy"], 4)
+    add_check(
+        checks,
+        "regularized linear walk-forward mean advantage",
+        linear_mean_advantage >= expected["minimum_linear_walk_forward_mean_advantage"],
+        linear_mean_advantage,
+        f">= {expected['minimum_linear_walk_forward_mean_advantage']}",
+    )
+    add_check(
+        checks,
+        "forest retains class-sensitive regime wins",
+        walk_forward["windows_beating_linear_macro_f1"] >= expected["minimum_forest_windows_beating_linear_macro_f1"],
+        walk_forward["windows_beating_linear_macro_f1"],
+        f">= {expected['minimum_forest_windows_beating_linear_macro_f1']}",
     )
     return checks
 
@@ -164,7 +211,10 @@ def main() -> None:
         "",
         f"- Status: {result['status'].upper()}",
         f"- Holdout accuracy: {model_summary['test_accuracy']:.4f}",
+        f"- Holdout balanced accuracy: {model_summary['test_balanced_accuracy']:.4f}",
+        f"- Holdout macro-F1: {model_summary['test_macro_f1']:.4f}",
         f"- Walk-forward mean accuracy: {walk_forward['mean_accuracy']:.4f}",
+        f"- Regularized-logistic walk-forward mean accuracy: {walk_forward['mean_linear_accuracy']:.4f}",
         f"- Calibration decision: {model_summary['probability_calibration']['reason']}",
         "",
         "## Checks",
