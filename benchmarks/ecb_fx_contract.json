@@ -1,0 +1,68 @@
+{
+  "name": "ECB multi-instrument model-family benchmark",
+  "parameters": {
+    "model_seed": 42,
+    "label_horizon": 5,
+    "bull_threshold": 0.008,
+    "bear_threshold": -0.008,
+    "calibration_fraction": 0.2,
+    "calibration_method": "sigmoid",
+    "walk_forward_windows": 6,
+    "walk_forward_test_size": 240
+  },
+  "instruments": [
+    {
+      "pair": "EUR/USD",
+      "slug": "eur_usd",
+      "fixture": "data/ecb_eur_usd_2012_2024.csv",
+      "metadata": "data/ecb_eur_usd_2012_2024.metadata.json",
+      "fixture_rows": 3327,
+      "fixture_sha256": "f45668667a2ecd3f85e84caecee32626b66c6c00d892e7134af2a1f1b24340ac",
+      "expectations": {
+        "minimum_majority_advantage": 0.2,
+        "minimum_persistence_advantage": 0.05,
+        "minimum_linear_accuracy_advantage": 0.02,
+        "minimum_linear_balanced_accuracy_advantage": 0.02,
+        "minimum_linear_macro_f1_advantage": 0.015,
+        "linear_prediction_classes": 3,
+        "calibration_rejection_reason": "audit_rejected_prediction_collapse",
+        "calibrated_audit_prediction_classes": 1,
+        "minimum_walk_forward_accuracy_range": 0.2,
+        "minimum_windows_beating_persistence": 1,
+        "maximum_windows_beating_persistence": 5,
+        "maximum_windows_beating_majority": 0,
+        "minimum_linear_walk_forward_mean_advantage": 0.04,
+        "minimum_forest_windows_beating_linear_macro_f1": 3
+      }
+    },
+    {
+      "pair": "EUR/GBP",
+      "slug": "eur_gbp",
+      "fixture": "data/ecb_eur_gbp_2012_2024.csv",
+      "metadata": "data/ecb_eur_gbp_2012_2024.metadata.json",
+      "fixture_rows": 3327,
+      "fixture_sha256": "1b302cb4f057693e3a093d1f7c756eb2ca2e92d9a4803b7c61c698053191e853"
+    },
+    {
+      "pair": "EUR/JPY",
+      "slug": "eur_jpy",
+      "fixture": "data/ecb_eur_jpy_2012_2024.csv",
+      "metadata": "data/ecb_eur_jpy_2012_2024.metadata.json",
+      "fixture_rows": 3327,
+      "fixture_sha256": "9c6e83b2ab5fbf31cf43e8d1ca04e55cf181744924b0ea9d8f83705b9504690c"
+    }
+  ],
+  "promotion_gate": {
+    "incumbent": "random_forest",
+    "challenger": "regularized_logistic",
+    "minimum_instruments": 3,
+    "minimum_holdout_joint_win_rate": 0.66,
+    "minimum_walk_forward_joint_win_rate": 0.66,
+    "minimum_instruments_with_positive_walk_forward_means": 2,
+    "minimum_overall_mean_balanced_accuracy_delta": 0.01,
+    "minimum_overall_mean_macro_f1_delta": 0.01,
+    "maximum_instrument_mean_metric_regression": -0.01,
+    "minimum_prediction_classes_per_instrument": 3,
+    "expected_decision": "retain_random_forest"
+  }
+}

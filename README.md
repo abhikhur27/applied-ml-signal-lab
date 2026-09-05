@@ -1,6 +1,6 @@
 # Applied ML Signal Lab
 
-Applied machine learning sandbox for market-regime classification with reproducible training runs.
+Applied machine learning workflow for market-regime classification with reproducible training runs.
 
 ## What this project does
 
@@ -113,7 +113,7 @@ That writes `model_search.csv` and `model_search_report.md`, then carries the se
 
 ## Frozen real-data benchmark
 
-The repo includes a 3,327-row EUR/USD reference-rate fixture from the European Central Bank covering 2012 through 2024. It is a real financial series with checked-in provenance, a fixed checksum, and an official-data updater—not synthetic price generation presented as market evidence.
+The repo includes three 3,327-row European Central Bank reference-rate fixtures covering 2012 through 2024: EUR/USD, EUR/GBP, and EUR/JPY. Each real financial series has checked-in provenance, a checksum frozen in the benchmark contract, and an official-data updater—not synthetic price generation presented as market evidence.
 
 Run the full credibility gate with:
 
@@ -121,9 +121,11 @@ Run the full credibility gate with:
 python -m src.benchmark --artifacts artifacts/ecb-benchmark
 ```
 
-The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, a regularized linear challenger, and six walk-forward windows. Its conclusion is deliberately negative and more specific than a single accuracy score: on this fixture and fixed five-session target, the maintained forest loses to persistence and majority-class baselines on raw accuracy. The logistic challenger also beats the forest on holdout accuracy, balanced accuracy, and macro-F1 while covering all three classes. Across walk-forward regimes the logistic model has higher mean accuracy, while the forest still wins macro-F1 in five of six windows. Sigmoid calibration improves audit-slice Brier score but collapses to one predicted class, so the pipeline rejects it and refits the uncalibrated forest on the full training window.
+The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, and six walk-forward windows per instrument. It also applies a model-family promotion gate: the regularized-logistic challenger must improve both balanced accuracy and macro-F1 across at least two-thirds of holdouts and walk-forward regimes, show positive mean gains on at least two instruments, clear one-point aggregate gains in both metrics, preserve all three prediction classes on every instrument, and avoid a per-instrument mean regression worse than one point. A single favorable holdout cannot replace the maintained model.
 
-This benchmark is a regression contract for honest behavior, not evidence of a tradable signal. See [`data/README.md`](data/README.md) for source and reuse details and [`benchmarks/ecb_eur_usd_contract.json`](benchmarks/ecb_eur_usd_contract.json) for the fixed expectations.
+The current frozen result retains the random forest. Logistic wins both balanced holdout metrics on all three pairs, but wins both metrics in only 3 of 18 walk-forward regimes; its cross-regime mean deltas are -0.0098 balanced accuracy and -0.0239 macro-F1.
+
+Suite artifacts include `benchmark_suite_results.json`, `benchmark_suite_report.md`, and `model_family_promotion.csv`, plus the normal training and walk-forward artifacts under one directory per currency pair. This benchmark is a regression contract for honest behavior, not evidence of a tradable signal. See [`data/README.md`](data/README.md) for source and reuse details and [`benchmarks/ecb_fx_contract.json`](benchmarks/ecb_fx_contract.json) for the fixed expectations and promotion policy.
 
 ## Leakage-safe forecast horizons
 
@@ -152,8 +154,8 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- promote a model family only through chronological validation rather than selecting it on the final holdout
-- test whether economically motivated features can beat both maintained model families without loosening the frozen ECB contract
+- test whether economically motivated features improve the cross-instrument promotion evidence without loosening the frozen gate
+- add a second independent, redistribution-safe asset family before making any predictive-performance claim
 
 ## Portfolio Repro Checklist
 
@@ -182,6 +184,8 @@ Use this sequence before publishing a run artifact:
 - `probability_comparison.csv`: whether calibration improved per-class Brier score or merely shifted confidence
 - `walk_forward_metrics.csv`: better read on temporal robustness than a single holdout score
 - `walk_forward_summary.json`: includes mean metrics and how often the forest beat logistic, persistence, and majority baselines across windows
+- `benchmark_suite_results.json`: cross-instrument contract status plus the model-family promotion decision and every gate requirement
+- `model_family_promotion.csv`: compact holdout and walk-forward balanced-metric deltas for each ECB currency pair
 - `feature_drift.csv`: quick read on whether the holdout slice has drifted materially away from the training regime
 - `model_search.csv`: chronological validation scoreboard, including whether each forest candidate was eligible to replace the maintained default
 - `run_report.md`: human-facing summary worth linking in notes or portfolio discussion
