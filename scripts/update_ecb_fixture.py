@@ -75,6 +75,7 @@ def write_fixture(source: str, quote_currency: str, config: dict[str, str]) -> d
     metadata = {
         "name": f"ECB {config['pair']} reference-rate benchmark fixture",
         "pair": config["pair"],
+        "asset_family": "foreign_exchange",
         "source": "European Central Bank",
         "source_url": SOURCE_URL,
         "source_page": SOURCE_PAGE,

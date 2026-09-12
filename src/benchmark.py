@@ -12,7 +12,7 @@ from src.train import build_features, load_csv, run_training, run_walk_forward
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONTRACT = ROOT / "benchmarks" / "ecb_fx_contract.json"
+DEFAULT_CONTRACT = ROOT / "benchmarks" / "multi_asset_contract.json"
 BALANCED_METRICS = ("balanced_accuracy", "macro_f1")
 
 
@@ -63,6 +63,7 @@ def summarize_instrument(
 
     return {
         "pair": instrument["pair"],
+        "asset_family": instrument["asset_family"],
         "slug": instrument["slug"],
         "fixture": instrument["fixture"],
         "fixture_rows": metadata["rows"],
@@ -220,6 +221,67 @@ def evaluate_promotion_gate(
         default=0,
     )
 
+    family_results = []
+    for asset_family in sorted({instrument["asset_family"] for instrument in instruments}):
+        family_instruments = [
+            instrument for instrument in instruments if instrument["asset_family"] == asset_family
+        ]
+        family_windows = sum(
+            instrument["walk_forward"]["windows_completed"] for instrument in family_instruments
+        )
+        family_joint_wins = sum(
+            instrument["walk_forward"]["linear_joint_balanced_metric_wins"]
+            for instrument in family_instruments
+        )
+        family_holdout_wins = sum(
+            int(instrument["holdout"]["linear_joint_balanced_metric_win"])
+            for instrument in family_instruments
+        )
+        family_mean_deltas = {}
+        for metric in BALANCED_METRICS:
+            numerator = sum(
+                instrument["walk_forward"]["linear_mean_deltas"][metric]
+                * instrument["walk_forward"]["windows_completed"]
+                for instrument in family_instruments
+            )
+            family_mean_deltas[metric] = round(numerator / family_windows, 4) if family_windows else 0.0
+        family_results.append(
+            {
+                "asset_family": asset_family,
+                "instrument_count": len(family_instruments),
+                "holdout_joint_win_rate": round(family_holdout_wins / len(family_instruments), 4),
+                "walk_forward_windows": family_windows,
+                "walk_forward_joint_win_rate": round(
+                    family_joint_wins / family_windows if family_windows else 0.0,
+                    4,
+                ),
+                "walk_forward_mean_deltas": family_mean_deltas,
+                "positive_walk_forward_balanced_metric_means": all(
+                    family_mean_deltas[metric] > 0 for metric in BALANCED_METRICS
+                ),
+            }
+        )
+    asset_family_count = len(family_results)
+    families_with_holdout_joint_wins = sum(
+        family["holdout_joint_win_rate"] >= config["minimum_asset_family_holdout_joint_win_rate"]
+        for family in family_results
+    )
+    families_with_positive_means = sum(
+        family["positive_walk_forward_balanced_metric_means"] for family in family_results
+    )
+    minimum_family_walk_forward_joint_win_rate = min(
+        (family["walk_forward_joint_win_rate"] for family in family_results),
+        default=0.0,
+    )
+    worst_family_mean_delta = min(
+        (
+            family["walk_forward_mean_deltas"][metric]
+            for family in family_results
+            for metric in BALANCED_METRICS
+        ),
+        default=0.0,
+    )
+
     window_weighted_deltas = {}
     for metric in BALANCED_METRICS:
         numerator = sum(
@@ -243,6 +305,39 @@ def evaluate_promotion_gate(
             "passed": instrument_count >= config["minimum_instruments"],
             "observed": instrument_count,
             "expected": f">= {config['minimum_instruments']}",
+        },
+        {
+            "name": "asset-family breadth",
+            "passed": asset_family_count >= config["minimum_asset_families"],
+            "observed": asset_family_count,
+            "expected": f">= {config['minimum_asset_families']}",
+        },
+        {
+            "name": "asset families meeting holdout joint-win rate",
+            "passed": families_with_holdout_joint_wins
+            >= config["minimum_asset_families_with_holdout_joint_wins"],
+            "observed": families_with_holdout_joint_wins,
+            "expected": f">= {config['minimum_asset_families_with_holdout_joint_wins']}",
+        },
+        {
+            "name": "minimum asset-family walk-forward joint-win rate",
+            "passed": minimum_family_walk_forward_joint_win_rate
+            >= config["minimum_asset_family_walk_forward_joint_win_rate"],
+            "observed": round(minimum_family_walk_forward_joint_win_rate, 4),
+            "expected": f">= {config['minimum_asset_family_walk_forward_joint_win_rate']}",
+        },
+        {
+            "name": "asset families with positive walk-forward balanced-metric means",
+            "passed": families_with_positive_means
+            >= config["minimum_asset_families_with_positive_walk_forward_means"],
+            "observed": families_with_positive_means,
+            "expected": f">= {config['minimum_asset_families_with_positive_walk_forward_means']}",
+        },
+        {
+            "name": "worst asset-family mean balanced-metric regression",
+            "passed": worst_family_mean_delta >= config["maximum_asset_family_mean_metric_regression"],
+            "observed": round(worst_family_mean_delta, 4),
+            "expected": f">= {config['maximum_asset_family_mean_metric_regression']}",
         },
         {
             "name": "holdout joint balanced-metric win rate",
@@ -296,6 +391,8 @@ def evaluate_promotion_gate(
         "decision": f"promote_{config['challenger']}" if passed else f"retain_{config['incumbent']}",
         "eligible_for_promotion": passed,
         "instrument_count": instrument_count,
+        "asset_family_count": asset_family_count,
+        "asset_families": family_results,
         "holdout_joint_wins": holdout_joint_wins,
         "holdout_joint_win_rate": round(holdout_joint_win_rate, 4),
         "walk_forward_windows": total_windows,
@@ -342,6 +439,13 @@ def validate_instrument(
     )
     add_check(
         checks,
+        f"{prefix} asset-family identity",
+        metadata.get("asset_family") == instrument["asset_family"],
+        metadata.get("asset_family"),
+        instrument["asset_family"],
+    )
+    add_check(
+        checks,
         f"{prefix} walk-forward window count",
         walk_forward["windows_completed"] == expected_windows,
         walk_forward["windows_completed"],
@@ -357,6 +461,7 @@ def promotion_evidence_frame(instruments: list[dict[str, Any]]) -> pd.DataFrame:
         rows.append(
             {
                 "pair": instrument["pair"],
+                "asset_family": instrument["asset_family"],
                 "holdout_balanced_accuracy_delta": holdout["linear_deltas"]["balanced_accuracy"],
                 "holdout_macro_f1_delta": holdout["linear_deltas"]["macro_f1"],
                 "holdout_joint_win": holdout["linear_joint_balanced_metric_win"],
@@ -373,11 +478,12 @@ def promotion_evidence_frame(instruments: list[dict[str, Any]]) -> pd.DataFrame:
 def render_suite_report(result: dict[str, Any]) -> str:
     promotion = result["promotion_gate"]
     lines = [
-        "# ECB multi-instrument benchmark contract",
+        "# Multi-asset model-family benchmark contract",
         "",
         f"- Contract status: {result['status'].upper()}",
         f"- Model-family decision: `{promotion['decision']}`",
         f"- Instruments: {promotion['instrument_count']}",
+        f"- Asset families: {promotion['asset_family_count']}",
         f"- Walk-forward regimes: {promotion['walk_forward_windows']}",
         (
             "- Challenger joint balanced-metric wins: "
@@ -392,21 +498,32 @@ def render_suite_report(result: dict[str, Any]) -> str:
         holdout = instrument["holdout"]["linear_deltas"]
         walk_forward = instrument["walk_forward"]
         lines.append(
-            f"- {instrument['pair']}: holdout Δ balanced accuracy {holdout['balanced_accuracy']:+.4f}, "
-            f"Δ macro-F1 {holdout['macro_f1']:+.4f}; walk-forward mean Δ balanced accuracy "
-            f"{walk_forward['linear_mean_deltas']['balanced_accuracy']:+.4f}, Δ macro-F1 "
+            f"- {instrument['pair']} ({instrument['asset_family']}): holdout delta balanced accuracy "
+            f"{holdout['balanced_accuracy']:+.4f}, delta macro-F1 {holdout['macro_f1']:+.4f}; "
+            f"walk-forward mean delta balanced accuracy "
+            f"{walk_forward['linear_mean_deltas']['balanced_accuracy']:+.4f}, delta macro-F1 "
             f"{walk_forward['linear_mean_deltas']['macro_f1']:+.4f}; joint wins "
             f"{walk_forward['linear_joint_balanced_metric_wins']}/{walk_forward['windows_completed']}"
         )
+    lines.extend(["", "## Asset-family evidence", ""])
+    for family in promotion["asset_families"]:
+        deltas = family["walk_forward_mean_deltas"]
+        lines.append(
+            f"- {family['asset_family']}: {family['instrument_count']} instrument(s), "
+            f"holdout joint-win rate {family['holdout_joint_win_rate']:.4f}, "
+            f"walk-forward joint-win rate {family['walk_forward_joint_win_rate']:.4f}, "
+            f"mean delta balanced accuracy {deltas['balanced_accuracy']:+.4f}, "
+            f"mean delta macro-F1 {deltas['macro_f1']:+.4f}"
+        )
     lines.extend(["", "## Promotion requirements", ""])
     lines.extend(
-        f"- {'PASS' if requirement['passed'] else 'FAIL'} — {requirement['name']}: "
+        f"- {'PASS' if requirement['passed'] else 'FAIL'} - {requirement['name']}: "
         f"observed `{requirement['observed']}`; expected {requirement['expected']}"
         for requirement in promotion["requirements"]
     )
     lines.extend(["", "## Contract checks", ""])
     lines.extend(
-        f"- {'PASS' if check['passed'] else 'FAIL'} — {check['name']}: "
+        f"- {'PASS' if check['passed'] else 'FAIL'} - {check['name']}: "
         f"observed `{check['observed']}`; expected {check['expected']}"
         for check in result["checks"]
     )
@@ -414,9 +531,9 @@ def render_suite_report(result: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the frozen ECB multi-instrument benchmark contract.")
+    parser = argparse.ArgumentParser(description="Run the frozen multi-asset model-family benchmark contract.")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
-    parser.add_argument("--artifacts", type=Path, default=Path("artifacts/ecb-benchmark"))
+    parser.add_argument("--artifacts", type=Path, default=Path("artifacts/multi-asset-benchmark"))
     args = parser.parse_args()
 
     contract_path = args.contract.resolve()
@@ -504,12 +621,12 @@ def main() -> None:
         index=False,
     )
 
-    print("\nECB multi-instrument contract checks:")
+    print("\nMulti-asset model-family contract checks:")
     for check in checks:
         print(f"{'PASS' if check['passed'] else 'FAIL'}: {check['name']} ({check['observed']})")
     print(f"Model-family decision: {promotion['decision']}")
     if result["status"] != "pass":
-        raise SystemExit("ECB benchmark contract failed; inspect benchmark_suite_results.json.")
+        raise SystemExit("Multi-asset benchmark contract failed; inspect benchmark_suite_results.json.")
 
 
 if __name__ == "__main__":
