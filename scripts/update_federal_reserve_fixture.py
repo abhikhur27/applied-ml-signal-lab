@@ -20,8 +20,20 @@ START_DATE = "2012-01-01"
 END_DATE = "2024-12-31"
 SERIES_ID = "RIFLGFCY10_N.B"
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_PATH = ROOT / "data" / "frb_us_treasury_10y_2012_2024.csv"
-METADATA_PATH = ROOT / "data" / "frb_us_treasury_10y_2012_2024.metadata.json"
+SERIES = (
+    {
+        "series_id": "RIFLGFCY02_N.B",
+        "maturity": "2-year",
+        "pair": "US 2Y Treasury yield",
+        "slug": "2y",
+    },
+    {
+        "series_id": SERIES_ID,
+        "maturity": "10-year",
+        "pair": "US 10Y Treasury yield",
+        "slug": "10y",
+    },
+)
 
 
 def download_source() -> bytes:
@@ -33,7 +45,7 @@ def download_source() -> bytes:
         return response.read()
 
 
-def extract_rows(source: str) -> list[dict[str, str]]:
+def extract_rows(source: str, series_id: str = SERIES_ID) -> list[dict[str, str]]:
     parsed = list(csv.reader(io.StringIO(source)))
     header_index = next(
         (index for index, row in enumerate(parsed) if row and row[0] == "Time Period"),
@@ -43,10 +55,10 @@ def extract_rows(source: str) -> list[dict[str, str]]:
         raise ValueError("Federal Reserve H.15 source is missing the Time Period header")
 
     header = parsed[header_index]
-    if SERIES_ID not in header:
-        raise ValueError(f"Federal Reserve H.15 source is missing {SERIES_ID}")
+    if series_id not in header:
+        raise ValueError(f"Federal Reserve H.15 source is missing {series_id}")
     date_index = header.index("Time Period")
-    value_index = header.index(SERIES_ID)
+    value_index = header.index(series_id)
 
     rows = []
     for source_row in parsed[header_index + 1 :]:
@@ -68,47 +80,51 @@ def render_fixture(rows: list[dict[str, str]]) -> str:
     return output.getvalue()
 
 
-def write_fixture(source: str) -> dict[str, object]:
-    fixture = render_fixture(extract_rows(source))
-    FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    FIXTURE_PATH.write_text(fixture, encoding="utf-8", newline="")
+def write_fixture(source: str, series: dict[str, str]) -> dict[str, object]:
+    series_id = series["series_id"]
+    maturity = series["maturity"]
+    fixture_path = ROOT / "data" / f"frb_us_treasury_{series['slug']}_2012_2024.csv"
+    metadata_path = ROOT / "data" / f"frb_us_treasury_{series['slug']}_2012_2024.metadata.json"
+    fixture = render_fixture(extract_rows(source, series_id))
+    fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    fixture_path.write_text(fixture, encoding="utf-8", newline="")
 
     metadata = {
-        "name": "Federal Reserve Board 10-year Treasury yield benchmark fixture",
-        "pair": "US 10Y Treasury yield",
+        "name": f"Federal Reserve Board {maturity} Treasury yield benchmark fixture",
+        "pair": series["pair"],
         "asset_family": "interest_rates",
         "source": "Board of Governors of the Federal Reserve System, H.15 release",
         "source_data_origin": "U.S. Treasury",
         "source_url": SOURCE_URL,
         "source_page": SOURCE_PAGE,
         "reuse_policy": REUSE_POLICY,
-        "series_id": SERIES_ID,
+        "series_id": series_id,
         "date_range": {"start": START_DATE, "end": END_DATE},
         "rows": fixture.count("\n") - 1,
         "columns": {
             "date": "Federal Reserve H.15 observation date",
             "close": (
-                "Market yield on U.S. Treasury securities at 10-year constant maturity, "
+                f"Market yield on U.S. Treasury securities at {maturity} constant maturity, "
                 "percent per year; renamed only for pipeline compatibility"
             ),
         },
         "transformations": [
-            f"selected the Time Period and {SERIES_ID} columns",
+            f"selected the Time Period and {series_id} columns",
             "removed observations reported as unavailable",
             "limited observations to the fixed inclusive date range",
             "sorted observations chronologically",
-            f"renamed Time Period to date and {SERIES_ID} to close",
+            f"renamed Time Period to date and {series_id} to close",
         ],
         "fixture_sha256": hashlib.sha256(fixture.encode("utf-8")).hexdigest(),
     }
-    METADATA_PATH.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {metadata['rows']} US 10Y Treasury yield rows to {FIXTURE_PATH}")
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {metadata['rows']} {series['pair']} rows to {fixture_path}")
     print(f"SHA-256: {metadata['fixture_sha256']}")
     return metadata
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Refresh the frozen Federal Reserve H.15 fixture.")
+    parser = argparse.ArgumentParser(description="Refresh the frozen Federal Reserve H.15 fixtures.")
     parser.add_argument(
         "--source",
         type=Path,
@@ -121,7 +137,8 @@ def main() -> None:
         if args.source
         else download_source().decode("utf-8-sig")
     )
-    write_fixture(source)
+    for series in SERIES:
+        write_fixture(source, series)
 
 
 if __name__ == "__main__":

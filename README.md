@@ -113,12 +113,12 @@ That writes `model_search.csv` and `model_search_report.md`, then carries the se
 
 ## Frozen multi-asset benchmark
 
-The repo includes four real financial series covering 2012 through 2024:
+The repo includes five real financial series covering 2012 through 2024:
 
 - three 3,327-row European Central Bank reference-rate fixtures: EUR/USD, EUR/GBP, and EUR/JPY
-- one 3,251-row Federal Reserve H.15 fixture for the U.S. 10-year Treasury constant-maturity yield
+- two 3,251-row Federal Reserve H.15 fixtures for the U.S. 2-year and 10-year Treasury constant-maturity yields
 
-Each series has checked-in provenance, a checksum frozen in the benchmark contract, and an official-data updater - not synthetic generation presented as market evidence. The Treasury fixture adds an interest-rate family that is independent of the correlated ECB currency pairs.
+Each series has checked-in provenance, a checksum frozen in the benchmark contract, and an official-data updater - not synthetic generation presented as market evidence. The two Treasury maturities give the independent interest-rate family enough depth to prevent one favorable rate series from satisfying a cross-family gate by itself.
 
 Run the full credibility gate with:
 
@@ -126,9 +126,9 @@ Run the full credibility gate with:
 python -m src.benchmark --artifacts artifacts/multi-asset-benchmark
 ```
 
-The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, and six walk-forward windows per instrument. It also applies a model-family promotion gate: the regularized-logistic challenger must improve both balanced accuracy and macro-F1 across at least two-thirds of holdouts and walk-forward regimes, satisfy the same evidence floors inside every asset family, show positive family-level mean gains, clear one-point aggregate gains in both metrics, preserve all three prediction classes on every instrument, and avoid material instrument- or family-level regression. A single favorable holdout or one correlated asset family cannot replace the maintained model.
+The contract checks fixture integrity, chronological holdout behavior, naive baseline advantages, calibration safety, and six walk-forward windows per instrument. It also applies a model-family promotion gate: the regularized-logistic challenger must improve both balanced accuracy and macro-F1 across at least two-thirds of holdouts and walk-forward regimes, cover at least two instruments in every asset family, satisfy the same evidence floors inside every family, show positive family-level mean gains, clear one-point aggregate gains in both metrics, preserve all three prediction classes on every instrument, and avoid material instrument- or family-level regression. A single favorable holdout, instrument, or correlated asset family cannot replace the maintained model.
 
-The current frozen result retains the random forest. Logistic wins both balanced holdout metrics on all four instruments, but wins both metrics in only 6 of 24 walk-forward regimes. Across the FX family its mean deltas are -0.0098 balanced accuracy and -0.0239 macro-F1; on the Treasury fixture they are +0.0317 and -0.0156. The mixed result fails the cross-family gate instead of allowing the stronger rate-series balanced-accuracy result to hide the macro-F1 regression.
+The current frozen result retains the random forest. Logistic wins both balanced holdout metrics on four of five instruments, losing both on the new 2-year yield fixture, and wins both metrics in only 9 of 30 walk-forward regimes. Across the FX family its mean deltas are -0.0098 balanced accuracy and -0.0239 macro-F1; across the two Treasury maturities they are +0.0297 and -0.0213. The mixed result fails the cross-family gate instead of allowing the stronger rate-family balanced-accuracy result to hide its macro-F1 regression.
 
 Suite artifacts include `benchmark_suite_results.json`, `benchmark_suite_report.md`, and `model_family_promotion.csv`, plus the normal training and walk-forward artifacts under one directory per instrument. This benchmark is a regression contract for honest behavior, not evidence of a tradable signal. See [`data/README.md`](data/README.md) for source and reuse details and [`benchmarks/multi_asset_contract.json`](benchmarks/multi_asset_contract.json) for the fixed expectations and promotion policy.
 
@@ -159,8 +159,8 @@ python -m src.train --csv path/to/ohlcv.csv
 
 ## Next steps
 
-- test whether economically motivated features improve the cross-family promotion evidence without loosening the frozen gate
-- add multiple instruments inside the interest-rate family before making any predictive-performance claim
+- test whether yield-curve-aware features improve the 2-year/10-year rate-family evidence without loosening the frozen gate
+- add a redistribution-safe third asset family before making any predictive-performance claim
 
 ## Portfolio Repro Checklist
 

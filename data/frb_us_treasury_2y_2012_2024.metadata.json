@@ -1,0 +1,28 @@
+{
+  "name": "Federal Reserve Board 2-year Treasury yield benchmark fixture",
+  "pair": "US 2Y Treasury yield",
+  "asset_family": "interest_rates",
+  "source": "Board of Governors of the Federal Reserve System, H.15 release",
+  "source_data_origin": "U.S. Treasury",
+  "source_url": "https://www.federalreserve.gov/datadownload/Output.aspx?filetype=csv&from=&label=include&lastobs=&layout=seriescolumn&rel=H15&series=bf17364827e38702b42a58cf8eaa3f78&to=&type=package",
+  "source_page": "https://www.federalreserve.gov/datadownload/Choose.aspx?rel=H15",
+  "reuse_policy": "https://www.federalreserve.gov/disclaimer.htm",
+  "series_id": "RIFLGFCY02_N.B",
+  "date_range": {
+    "start": "2012-01-01",
+    "end": "2024-12-31"
+  },
+  "rows": 3251,
+  "columns": {
+    "date": "Federal Reserve H.15 observation date",
+    "close": "Market yield on U.S. Treasury securities at 2-year constant maturity, percent per year; renamed only for pipeline compatibility"
+  },
+  "transformations": [
+    "selected the Time Period and RIFLGFCY02_N.B columns",
+    "removed observations reported as unavailable",
+    "limited observations to the fixed inclusive date range",
+    "sorted observations chronologically",
+    "renamed Time Period to date and RIFLGFCY02_N.B to close"
+  ],
+  "fixture_sha256": "776a6179154ddaf4995789bb0c78ae5229f0824257eb3dd043d0c6ad67b38443"
+}

@@ -20,9 +20,9 @@ If the local Python certificate store cannot validate the download, fetch the of
 
 The fixtures intentionally end on 2024-12-31 so benchmark results do not drift when the ECB publishes new observations. The benchmark contract stores each expected row count and SHA-256 checksum separately from the generated metadata, so refreshing both files cannot silently move the frozen baseline.
 
-## Federal Reserve H.15 Treasury yield
+## Federal Reserve H.15 Treasury yields
 
-`frb_us_treasury_10y_2012_2024.csv` is a frozen slice of the Federal Reserve Board's H.15 daily series `RIFLGFCY10_N.B`: the market yield on U.S. Treasury securities at 10-year constant maturity, quoted as percent per year. H.15 identifies the U.S. Treasury as the source for constant-maturity yields.
+`frb_us_treasury_2y_2012_2024.csv` and `frb_us_treasury_10y_2012_2024.csv` are frozen slices of the Federal Reserve Board's H.15 daily series `RIFLGFCY02_N.B` and `RIFLGFCY10_N.B`: the market yields on U.S. Treasury securities at 2-year and 10-year constant maturity, quoted as percent per year. H.15 identifies the U.S. Treasury as the source for constant-maturity yields.
 
 Source: [Federal Reserve Board H.15 Data Download Program](https://www.federalreserve.gov/datadownload/Choose.aspx?rel=H15)
 
@@ -34,4 +34,4 @@ To reproduce the fixture and metadata from the official preformatted Treasury Co
 python scripts/update_federal_reserve_fixture.py
 ```
 
-The updater selects the daily 10-year series, removes unavailable observations, applies the frozen date range, preserves the published numeric values, and renames the source columns only for pipeline compatibility. It also accepts `--source path/to/h15.csv` for a previously downloaded official package.
+The updater downloads the package once, selects both daily maturity series, removes unavailable observations, applies the frozen date range, preserves the published numeric values, and renames the source columns only for pipeline compatibility. It also accepts `--source path/to/h15.csv` for a previously downloaded official package.

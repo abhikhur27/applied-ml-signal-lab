@@ -28,3 +28,15 @@ def test_h15_fixture_extraction_skips_metadata_and_unavailable_rows() -> None:
 
     assert rows == [{"date": "2024-01-03", "close": "4.05"}]
     assert render_h15_fixture(rows) == "date,close\n2024-01-03,4.05\n"
+
+
+def test_h15_fixture_extraction_selects_requested_maturity() -> None:
+    source = """\
+"Time Period","RIFLGFCY02_N.B","RIFLGFCY10_N.B"
+2024-01-03,4.32,4.05
+2024-01-02,ND,3.95
+"""
+
+    rows = extract_h15_rows(source, "RIFLGFCY02_N.B")
+
+    assert rows == [{"date": "2024-01-03", "close": "4.32"}]

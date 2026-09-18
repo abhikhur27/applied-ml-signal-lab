@@ -262,6 +262,10 @@ def evaluate_promotion_gate(
             }
         )
     asset_family_count = len(family_results)
+    minimum_instruments_per_family = min(
+        (family["instrument_count"] for family in family_results),
+        default=0,
+    )
     families_with_holdout_joint_wins = sum(
         family["holdout_joint_win_rate"] >= config["minimum_asset_family_holdout_joint_win_rate"]
         for family in family_results
@@ -311,6 +315,13 @@ def evaluate_promotion_gate(
             "passed": asset_family_count >= config["minimum_asset_families"],
             "observed": asset_family_count,
             "expected": f">= {config['minimum_asset_families']}",
+        },
+        {
+            "name": "instrument depth per asset family",
+            "passed": minimum_instruments_per_family
+            >= config["minimum_instruments_per_asset_family"],
+            "observed": minimum_instruments_per_family,
+            "expected": f">= {config['minimum_instruments_per_asset_family']}",
         },
         {
             "name": "asset families meeting holdout joint-win rate",
@@ -392,6 +403,7 @@ def evaluate_promotion_gate(
         "eligible_for_promotion": passed,
         "instrument_count": instrument_count,
         "asset_family_count": asset_family_count,
+        "minimum_instruments_per_asset_family": minimum_instruments_per_family,
         "asset_families": family_results,
         "holdout_joint_wins": holdout_joint_wins,
         "holdout_joint_win_rate": round(holdout_joint_win_rate, 4),
@@ -484,6 +496,10 @@ def render_suite_report(result: dict[str, Any]) -> str:
         f"- Model-family decision: `{promotion['decision']}`",
         f"- Instruments: {promotion['instrument_count']}",
         f"- Asset families: {promotion['asset_family_count']}",
+        (
+            "- Minimum instruments in one asset family: "
+            f"{promotion['minimum_instruments_per_asset_family']}"
+        ),
         f"- Walk-forward regimes: {promotion['walk_forward_windows']}",
         (
             "- Challenger joint balanced-metric wins: "

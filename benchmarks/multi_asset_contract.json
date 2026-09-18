@@ -55,6 +55,15 @@
       "fixture_sha256": "9c6e83b2ab5fbf31cf43e8d1ca04e55cf181744924b0ea9d8f83705b9504690c"
     },
     {
+      "pair": "US 2Y Treasury yield",
+      "asset_family": "interest_rates",
+      "slug": "us_treasury_2y",
+      "fixture": "data/frb_us_treasury_2y_2012_2024.csv",
+      "metadata": "data/frb_us_treasury_2y_2012_2024.metadata.json",
+      "fixture_rows": 3251,
+      "fixture_sha256": "776a6179154ddaf4995789bb0c78ae5229f0824257eb3dd043d0c6ad67b38443"
+    },
+    {
       "pair": "US 10Y Treasury yield",
       "asset_family": "interest_rates",
       "slug": "us_treasury_10y",
@@ -67,8 +76,9 @@
   "promotion_gate": {
     "incumbent": "random_forest",
     "challenger": "regularized_logistic",
-    "minimum_instruments": 4,
+    "minimum_instruments": 5,
     "minimum_asset_families": 2,
+    "minimum_instruments_per_asset_family": 2,
     "minimum_asset_family_holdout_joint_win_rate": 0.66,
     "minimum_asset_families_with_holdout_joint_wins": 2,
     "minimum_asset_family_walk_forward_joint_win_rate": 0.66,
